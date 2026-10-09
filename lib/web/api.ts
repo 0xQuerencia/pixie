@@ -7,6 +7,8 @@ const programs = require("../programs");
 const log = require("../log");
 const config = require("../config").config;
 const { probe } = require("../probe");
+const retrieve = require("../retrieve");
+const answerVerifier = require("../answerVerifier");
 const { coverageStats, relativeTime } = require("../stats");
 import type { Program, ProgramSource, SlackClient, Ticket } from "../types";
 
@@ -1144,6 +1146,28 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
   }
   const sources = sourceNamesFromContext(context);
 
+  let retrieval: Array<{ source: string; heading: string; lexical: number; semantic: number; total: number }> = [];
+  try {
+    const index = require("../knowledge").getIndex(programId);
+    retrieval = retrieve
+      .scoreDetailed(index, question)
+      .slice(0, 10)
+      .map(
+        (entry: {
+          chunk: { source?: string; heading?: string };
+          lexical: number;
+          semantic: number;
+          total: number;
+        }) => ({
+          source: String(entry.chunk?.source || ""),
+          heading: String(entry.chunk?.heading || ""),
+          lexical: Number(entry.lexical.toFixed(4)),
+          semantic: Number(entry.semantic.toFixed(4)),
+          total: Number(entry.total.toFixed(4)),
+        }),
+      );
+  } catch (_) {}
+
   let result = null;
   try {
     result = await require("../lookup").lookupAnswer(question, "", program, null, { skipCache: true });
@@ -1156,6 +1180,27 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
     grounded = require("../respond").isGroundedAnswer(result);
   } catch (_) {
     grounded = false;
+  }
+
+  let grounding = {
+    sendable: grounded,
+    verdict: grounded ? "supported" : "unsupported",
+    claims: [],
+    unsupported: [],
+    errors: [],
+  };
+  if (result?.groundingVerdict || result?.evidence) {
+    try {
+      grounding = answerVerifier.verify({
+        programId,
+        verdict: result.groundingVerdict,
+        evidence: result.evidence,
+        fixtureClaims: result.fixtureClaims,
+      });
+      grounded = grounded && grounding.sendable;
+    } catch (_) {
+      grounded = false;
+    }
   }
 
   const decided = testQuestionExpectedAction({
@@ -1176,9 +1221,19 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
     engaged: Boolean(engagement.engage),
     classifierError: engagement.error || null,
     sources,
+    retrieval,
+    grounding,
     grounded,
     expectedAction: decided.expectedAction,
     reason: decided.reason,
+    why:
+      decided.expectedAction === "reply"
+        ? "Pixie has a supported answer and would reply."
+        : decided.expectedAction === "ticket+helper"
+          ? "Pixie could not verify a sendable answer, so it would escalate to a helper."
+          : decided.expectedAction === "uncertain"
+            ? "Pixie would acknowledge uncertainty without guessing."
+            : "The engagement policy says to stay silent for this message.",
     answerPreview:
       decided.expectedAction === "reply" && result && result.answer ? String(result.answer).slice(0, 500) : null,
   };

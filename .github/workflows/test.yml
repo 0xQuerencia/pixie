@@ -23,3 +23,4 @@ jobs:
       - run: bun run typecheck
       - run: bun run format:check
       - run: bun run test
+      - run: bun run eval:support

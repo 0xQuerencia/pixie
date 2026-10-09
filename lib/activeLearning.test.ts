@@ -72,7 +72,7 @@ function stubExtraction(results: Array<Record<string, string>>) {
   };
 }
 
-test("auto learning approves helper-verified resolutions with provenance", async () => {
+test("helper-verified resolutions remain reviewable candidates with provenance", async () => {
   programs.saveProgram({ id: "al-auto", name: "Auto", learning: "auto" });
   const restore = stubExtraction([
     { problem: "account access reset", solution: "Reset the password.", category: "account_access" },
@@ -82,14 +82,14 @@ test("auto learning approves helper-verified resolutions with provenance", async
       ticket: resolvedTicket("al-auto", "one"),
     })) as LearningResult;
     assert.equal(result.ok, true);
-    assert.equal(result.autoLearned, true);
-    assert.equal(result.fact.status, "approved");
-    assert.equal(result.fact.auto_learned, 1);
+    assert.equal(result.autoLearned, false);
+    assert.equal(result.fact.status, "candidate");
+    assert.equal(result.fact.auto_learned, 0);
     assert.equal(result.fact.ticket_id > 0, true);
     assert.equal(result.fact.resolver_id, "U-helper");
-    assert.equal(result.fact.verified_at > 0, true);
-    assert.equal(db.approvedFacts(20, "al-auto").length, 1);
-    assert.equal(resolutionMemory.listCandidates("al-auto")[0].auto_learned, 1);
+    assert.equal(result.fact.verified_at, null);
+    assert.equal(db.approvedFacts(20, "al-auto").length, 0);
+    assert.equal(resolutionMemory.listCandidates("al-auto")[0].auto_learned, 0);
   } finally {
     restore();
   }
@@ -128,7 +128,7 @@ test("overlapping newer answers supersede older facts", async () => {
     const old = db.getLearnedFactById(first.fact.id);
     assert.equal(old.status, "superseded");
     assert.equal(old.superseded_by, second.fact.id);
-    assert.equal(second.fact.status, "approved");
+    assert.equal(second.fact.status, "candidate");
     assert.equal(
       db.approvedFacts(20, "al-overlap").some((row: FactRow) => row.answer.includes("old reset")),
       false,

@@ -133,6 +133,23 @@ function validateClaimSupport({
   if (!Array.isArray(evidence) || !Array.isArray(fixtureClaims))
     return { ok: false, supported: false, claims: [], errors: ["evidence and fixtureClaims must be arrays"] };
 
+  // A model can mark every claim as individually supported while still
+  // returning needs_review at the answer level. That verdict is explicitly
+  // non-sendable for strict grounding: claim support cannot upgrade it.
+  if (parsed.verdict !== "supported") {
+    return {
+      ok: true,
+      supported: false,
+      verdict: parsed.verdict,
+      claims: parsed.claims.map((claim) => ({
+        claim: claim.claim,
+        supported: false,
+        reason: `top-level verdict is ${parsed.verdict}`,
+      })),
+      errors: [`top-level verdict ${parsed.verdict} is not sendable`],
+    };
+  }
+
   const byId = new Map(evidence.map((item) => [asString(item && item.id), item]));
   const fixtures = new Set(fixtureClaims.map(claimKey));
   const results = parsed.claims.map((claim) => {
@@ -149,7 +166,7 @@ function validateClaimSupport({
     const supported = claim.supported && (explicitFixture || (claim.evidenceIds.length > 0 && validEvidence));
     return { claim: claim.claim, supported, reason: supported ? "explicit evidence" : "no exact same-program support" };
   });
-  const supported = results.length > 0 && results.every((claim) => claim.supported);
+  const supported = parsed.verdict === "supported" && results.length > 0 && results.every((claim) => claim.supported);
   return { ok: true, supported, verdict: supported ? "supported" : "unsupported", claims: results, errors: [] };
 }
 

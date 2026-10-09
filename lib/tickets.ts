@@ -10,6 +10,7 @@ import incidentsModule = require("./incidents");
 import assignmentLifecycleModule = require("./assignmentLifecycle");
 import ticketCategoryModule = require("./ticketCategory");
 import resolutionPipelineModule = require("./resolutionPipeline");
+import handoffContextModule = require("./handoffContext");
 import policy = require("./tickets/policy");
 import type { ChannelRole, Program, SlackClient, Ticket } from "./types";
 import type {
@@ -172,6 +173,22 @@ const incidents = incidentsModule as IncidentsModule;
 const assignmentLifecycle: AssignmentLifecycleModule = assignmentLifecycleModule as never;
 const ticketCategory = ticketCategoryModule as TicketCategoryModule;
 const resolutionPipeline = resolutionPipelineModule as ResolutionPipelineModule;
+const handoffContext = handoffContextModule as {
+  build(input: {
+    programId: string;
+    userId?: string | null;
+    question: string;
+    reason?: string | null;
+    sources?: string[];
+    attempts?: string[];
+  }): string;
+};
+
+interface HandoffDetails {
+  handoffReason?: string | null;
+  sources?: string[];
+  attempts?: string[];
+}
 
 function errorMessage(error: unknown): string {
   if (error && typeof error === "object" && "message" in error) {
@@ -943,6 +960,9 @@ function markWaitingForHelper({
   question = null,
   role = null,
   explicit = false,
+  handoffReason = null,
+  sources = [],
+  attempts = [],
 }: {
   ticketId: number;
   client?: SlackClient | null;
@@ -950,7 +970,7 @@ function markWaitingForHelper({
   question?: string | null;
   role?: string | null;
   explicit?: boolean;
-}): Ticket | null {
+} & HandoffDetails): Ticket | null {
   const ticket = db.getTicket(ticketId);
   if (!ticket || CLOSED.includes(ticket.status) || ticket.status === "snoozed") return ticket || null;
   if (db.isThreadMuted(ticket.thread_ts) || db.isTakeover(ticket.thread_ts)) return ticket;
@@ -999,7 +1019,16 @@ function markWaitingForHelper({
   }
   const mayPing = !autoBlocked && (pol ? pol.pingHelpers : prog && prog.helperPing === true);
   if (mayPing) {
-    void pingRecommendedHelper({ client, ticket: updated, program: prog, question, role }).catch((e) => {
+    void pingRecommendedHelper({
+      client,
+      ticket: updated,
+      program: prog,
+      question,
+      role,
+      handoffReason,
+      sources,
+      attempts,
+    }).catch((e) => {
       log.warn("tickets", `helper ping failed for #${ticketId}: ${errorMessage(e)}`);
     });
   }
@@ -1018,6 +1047,9 @@ async function handOffToHelper({
   requesterId = null,
   workspaceId = null,
   role = null,
+  handoffReason = null,
+  sources = [],
+  attempts = [],
 }: {
   client: SlackClient;
   program: Program | null;
@@ -1028,12 +1060,35 @@ async function handOffToHelper({
   requesterId?: string | null;
   workspaceId?: string | null;
   role?: string | null;
-}): Promise<Ticket | string | null> {
-  if (ticket) return markWaitingForHelper({ ticketId: ticket.id, client, program, question, role, explicit: true });
+} & HandoffDetails): Promise<Ticket | string | null> {
+  if (ticket)
+    return markWaitingForHelper({
+      ticketId: ticket.id,
+      client,
+      program,
+      question,
+      role,
+      explicit: true,
+      handoffReason,
+      sources,
+      attempts,
+    });
   if (!program) return null;
   const pol = policyFor(program, { channel, workspaceId, role });
   if (pol ? !pol.pingHelpers : program.helperPing !== true) return null;
-  return pingThreadHelper({ client, program, channel, threadTs, question, requesterId, workspaceId, role });
+  return pingThreadHelper({
+    client,
+    program,
+    channel,
+    threadTs,
+    question,
+    requesterId,
+    workspaceId,
+    role,
+    handoffReason,
+    sources,
+    attempts,
+  });
 }
 
 async function pingThreadHelper({
@@ -1045,6 +1100,9 @@ async function pingThreadHelper({
   requesterId = null,
   workspaceId = null,
   role = null,
+  handoffReason = null,
+  sources = [],
+  attempts = [],
 }: {
   client: SlackClient;
   program: Program | null;
@@ -1054,7 +1112,7 @@ async function pingThreadHelper({
   requesterId?: string | null;
   workspaceId?: string | null;
   role?: string | null;
-}): Promise<string | null> {
+} & HandoffDetails): Promise<string | null> {
   if (!client || !program || !threadTs || !channel) return null;
   const pol = policyFor(program, { channel, workspaceId, role });
   if (pol ? !pol.pingHelpers : program.helperPing !== true) return null;
@@ -1081,7 +1139,15 @@ async function pingThreadHelper({
 
   db.touchThread(threadTs, channel, { helperPinged: true });
 
-  const ask = `<@${top.userId}> — could you take a look at this one?`;
+  const packet = handoffContext.build({
+    programId: program.id,
+    userId: requesterId,
+    question,
+    reason: handoffReason,
+    sources,
+    attempts,
+  });
+  const ask = `<@${top.userId}> — could you take a look at this one?\n${packet}`;
   await slackMessages.sendProgramMessage({
     client,
     program,
@@ -1132,6 +1198,9 @@ async function pingSpecificHelper({
   source = "ping",
   candidates = [],
   role = null,
+  handoffReason = null,
+  sources = [],
+  attempts = [],
 }: {
   client: SlackClient;
   ticket: Ticket | null;
@@ -1141,7 +1210,7 @@ async function pingSpecificHelper({
   source?: string;
   candidates?: TicketCandidate[];
   role?: string | null;
-}): Promise<string | null> {
+} & HandoffDetails): Promise<string | null> {
   const logDecision = (skipReason: string | null, posted = false) =>
     logRoutingDecision({
       ticket,
@@ -1174,7 +1243,15 @@ async function pingSpecificHelper({
   const offer = assignmentLifecycle.recordOffer({ ticket, to: userId, source });
   if (!offer.recorded) return (logDecision("dedupe_open_offer_exists"), null);
 
-  const ask = `<@${userId}> — could you take a look at this one?`;
+  const packet = handoffContext.build({
+    programId: program.id,
+    userId: ticket.requester_id,
+    question: question || ticket.question,
+    reason: handoffReason,
+    sources,
+    attempts,
+  });
+  const ask = `<@${userId}> — could you take a look at this one?\n${packet}`;
   await slackMessages.sendProgramMessage({
     client,
     program,
@@ -1192,13 +1269,16 @@ async function pingRecommendedHelper({
   program,
   question = null,
   role = null,
+  handoffReason = null,
+  sources = [],
+  attempts = [],
 }: {
   client: SlackClient | null;
   ticket: Ticket | null;
   program: Program | null;
   question?: string | null;
   role?: string | null;
-}): Promise<string | null> {
+} & HandoffDetails): Promise<string | null> {
   if (!client || !ticket || !program) return null;
   let userId = ticket.assignee_id || null;
   if (userId && ticket.requester_id && userId === ticket.requester_id) {
@@ -1228,7 +1308,19 @@ async function pingRecommendedHelper({
     }
     userId = top.userId;
   }
-  return pingSpecificHelper({ client, ticket, program, userId, question, source: "ping", candidates, role });
+  return pingSpecificHelper({
+    client,
+    ticket,
+    program,
+    userId,
+    question,
+    source: "ping",
+    candidates,
+    role,
+    handoffReason,
+    sources,
+    attempts,
+  });
 }
 
 function recordSlackSyncFailure(surface: string, ticket: Ticket | null, err: SlackError): void {
@@ -1414,6 +1506,9 @@ async function escalateTicket({
   placeholder = null,
   bypassIncidentMatch = false,
   role = null,
+  handoffReason = null,
+  sources = [],
+  attempts = [],
 }: {
   program: Program | null;
   channel: string;
@@ -1425,7 +1520,7 @@ async function escalateTicket({
   placeholder?: string | null;
   bypassIncidentMatch?: boolean;
   role?: string | null;
-}): Promise<Ticket | null> {
+} & HandoffDetails): Promise<Ticket | null> {
   const { prog, programId, resolvedWorkspaceId } = resolveProg({ program, channel, workspaceId });
   const existing = db.getTicketByThreadTs(threadTs, resolvedWorkspaceId, prog?.id || null);
 
@@ -1462,7 +1557,17 @@ async function escalateTicket({
 
   const promoted = CLOSED.includes(ticket.status)
     ? ticket
-    : markWaitingForHelper({ ticketId: ticket.id, client, program: prog, question, role, explicit: true });
+    : markWaitingForHelper({
+        ticketId: ticket.id,
+        client,
+        program: prog,
+        question,
+        role,
+        explicit: true,
+        handoffReason,
+        sources,
+        attempts,
+      });
   if (placeholder) await reply.discardPlaceholder(client, channel, placeholder);
   log.info("tickets", `escalated ticket #${ticket.id} for ${programId} in ${channel}`);
   return promoted || ticket;

@@ -184,7 +184,7 @@ test("active learning supersedes only questions with matching intent or informat
       db.resolveTicket(id, "Resolved by helper.", "U-helper");
       results.push(await activeLearning.learnFromResolution({ ticket: db.getTicket(id), workerId: "U-helper" }));
     }
-    assert.equal(db.getLearnedFactById(results[0].fact.id).status, "approved");
+    assert.equal(db.getLearnedFactById(results[0].fact.id).status, "candidate");
     assert.equal(db.getLearnedFactById(results[0].fact.id).superseded_by, null);
     assert.equal(db.getLearnedFactById(results[2].fact.id).superseded_by, null);
     assert.equal(db.getLearnedFactById(results[4].fact.id).status, "superseded");

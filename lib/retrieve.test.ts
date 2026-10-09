@@ -79,6 +79,16 @@ test("selectChunks matches a question phrased differently from the docs", () => 
   assert.match(top.text, /Restoration energy/);
 });
 
+test("scoreDetailed reranks a paraphrase while retaining source metadata", () => {
+  const local = retrieve.buildIndex(
+    retrieve.chunkSections([["Grant rules", "Unused grants may be returned before activation."]]),
+  );
+  const [top] = retrieve.scoreDetailed(local, "Can I get my money back if I never activated the grant?");
+  assert.equal(top.chunk.source, "Grant rules");
+  assert.ok(top.semantic > 0);
+  assert.ok(top.total >= top.lexical);
+});
+
 test("selectChunks returns nothing when no term matches", () => {
   assert.deepEqual(retrieve.selectChunks(index, "zzzz qqqq"), []);
   assert.deepEqual(retrieve.selectChunks(index, ""), []);

@@ -1,5 +1,6 @@
 const db = require("./db");
 const log = require("./log");
+const supportMemory = require("./supportMemory");
 import type { SlackClient } from "./types";
 
 interface ThreadMessage {
@@ -304,6 +305,39 @@ function getUserContext(userId: string) {
   };
 }
 
+function rememberSupportContext({
+  programId,
+  userId,
+  question,
+  threadTs = null,
+}: {
+  programId?: string | null;
+  userId?: string | null;
+  question?: string | null;
+  threadTs?: string | null;
+}) {
+  if (!programId || !userId || !question?.trim()) return;
+  const value = question.trim();
+  supportMemory.remember({ programId, userId, kind: "problem", value, sourceThreadTs: threadTs });
+  if (/\b(?:tried|attempted|already|i\s+did|we\s+did|clicked|submitted|restarted|refreshed|cleared)\b/i.test(value)) {
+    supportMemory.remember({ programId, userId, kind: "attempt", value, sourceThreadTs: threadTs, confidence: 0.9 });
+  }
+  if (
+    /\b(?:on|using|from)\s+(?:ios|android|iphone|ipad|windows|mac|linux|chrome|safari|firefox|mobile|desktop)\b/i.test(
+      value,
+    )
+  ) {
+    supportMemory.remember({
+      programId,
+      userId,
+      kind: "environment",
+      value,
+      sourceThreadTs: threadTs,
+      confidence: 0.85,
+    });
+  }
+}
+
 export = {
   addToThread,
   getThreadContext,
@@ -315,5 +349,6 @@ export = {
   fetchThreadCrowd,
   updateUserHistory,
   getUserContext,
+  rememberSupportContext,
   deriveTopic,
 };

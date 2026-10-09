@@ -13,6 +13,11 @@ const channelPolicy = require("./channelPolicy");
 const engagement = require("./pipeline/engagement");
 const messagePolicy = require("./pipeline/messagePolicy");
 const pipelineEvents = require("./pipeline/events");
+const supportMemory = require("./supportMemory");
+const traceStore = require("./pipeline/traceStore");
+const knowledge = require("./knowledge");
+const retrieve = require("./retrieve");
+const answerVerifier = require("./answerVerifier");
 import type { ChannelRole, Program, SlackClient } from "./types";
 
 type ProgramLike = Partial<Program> & { id?: string };
@@ -21,6 +26,9 @@ interface AnswerResult {
   answer: string;
   direct?: boolean;
   unclear?: boolean;
+  groundingVerdict?: unknown;
+  evidence?: unknown[];
+  fixtureClaims?: unknown[];
 }
 interface UserContext {
   recentTopics?: string[];
@@ -92,6 +100,25 @@ interface RespondOptions {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function retrievalTrace(programId: string | null, question: string) {
+  if (!programId || !question) return [];
+  try {
+    return retrieve
+      .scoreDetailed(knowledge.getIndex(programId), question)
+      .slice(0, 10)
+      .map((entry: any) => ({
+        source: String(entry.chunk?.source || ""),
+        heading: String(entry.chunk?.heading || ""),
+        lexical: Number(entry.lexical.toFixed(4)),
+        semantic: Number(entry.semantic.toFixed(4)),
+        total: Number(entry.total.toFixed(4)),
+      }));
+  } catch (error: unknown) {
+    log.debug("respond", `retrieval trace unavailable: ${errorMessage(error)}`);
+    return [];
+  }
 }
 
 const MENTION_FALLBACK = "hmm not totally sure about that one — ask a helper if it's something specific :oke:";
@@ -180,8 +207,18 @@ function isRecallQuestion(text: string) {
   return RECALL_PATTERN.test(text || "");
 }
 
-function buildChatContext(threadContext: string | null, userContext: UserContext | null, question = "") {
+function buildChatContext(
+  threadContext: string | null,
+  userContext: UserContext | null,
+  question = "",
+  programId: string | null = null,
+  userId: string | null = null,
+) {
   const parts = [buildContextPrompt(threadContext)];
+  if (programId && userId) {
+    const memory = supportMemory.formatForPrompt(programId, userId);
+    if (memory) parts.push(memory);
+  }
   if (!isRecallQuestion(question)) return parts.join("");
 
   const topics = userContext?.recentTopics || [];
@@ -320,6 +357,7 @@ async function handleSensitiveMatch({
     client,
     workspaceId,
     bypassIncidentMatch: true,
+    handoffReason: "sensitive category requires human review",
   });
   return true;
 }
@@ -427,6 +465,7 @@ async function handleLookupFailure({
         threadTs,
         question,
         requesterId: userId,
+        handoffReason: "answer lookup failed",
       });
       await reply.discardPlaceholder(client, channel, placeholder());
     } catch (error: unknown) {
@@ -571,6 +610,23 @@ async function respond({
   const isAddressed = addressed || mode === ALWAYS || role === "dm";
   const startedAt = Date.now();
   const trace = pipelineEvents.start({ programId, role, addressed: isAddressed });
+  const traceRequestId = `${threadTs}:${startedAt}`;
+  let traceTicketId: number | null = null;
+  const appendAnswerTrace = (stage: string, payload: Record<string, unknown>) => {
+    if (!programId) return;
+    try {
+      traceStore.append({
+        programId,
+        ticketId: traceTicketId,
+        threadTs,
+        requestId: traceRequestId,
+        stage,
+        payload,
+      });
+    } catch (error: unknown) {
+      log.debug("respond", `answer trace write failed: ${errorMessage(error)}`);
+    }
+  };
 
   const activeIncident = await handleActiveIncident({
     client,
@@ -628,6 +684,7 @@ async function respond({
   const threadContext = context.getThreadContext(threadTs, trimmed);
 
   context.addToThread(threadTs, "user", trimmed, userId, channel);
+  context.rememberSupportContext({ programId, userId, question: trimmed, threadTs });
 
   const silencedBefore = isAddressed ? reply.silenceState(threadTs) : null;
 
@@ -710,9 +767,12 @@ async function respond({
 
   const currentTicket = async () => {
     await supportTicketReady;
-    return inHelpChannel && !programs.isShadow(prog) ? db.getTicketByThreadTs(threadTs, workspaceId) : null;
+    const ticket =
+      inHelpChannel && !programs.isShadow(prog) ? db.getTicketByThreadTs(threadTs, workspaceId, programId) : null;
+    if (ticket) traceTicketId = ticket.id;
+    return ticket;
   };
-  const handOff = async () => {
+  const handOff = async (reason = "no verified answer found", sources: string[] = []) => {
     const ticket = await currentTicket();
     await tickets.handOffToHelper({
       ticket,
@@ -723,13 +783,17 @@ async function respond({
       question: trimmed,
       requesterId: userId,
       role,
+      handoffReason: reason,
+      sources,
     });
+    appendAnswerTrace("handoff", { reason, sources, question: trimmed });
     trace.set({ helperEscalated: true });
   };
 
   const aiOff = !programs.aiAnswersEnabled(programId) || (role === "help" && settings?.aiReplies === false);
   if (aiOff && kind === "program") {
-    if (role === "help" && settings?.escalateUnknown !== false) await handOff();
+    if (role === "help" && settings?.escalateUnknown !== false)
+      await handOff("Pixie is not configured to answer this program here");
     if (isAddressed) {
       await publishReply({
         silencedBefore,
@@ -750,7 +814,7 @@ async function respond({
 
   let contextPrompt =
     isAddressed && kind === "general"
-      ? buildChatContext(threadContext, context.getUserContext(userId), effectiveQuestion)
+      ? buildChatContext(threadContext, context.getUserContext(userId), effectiveQuestion, programId, userId)
       : buildContextPrompt(threadContext);
 
   const known = lookup.knownAnswer({
@@ -920,6 +984,25 @@ async function respond({
   const cannotTell = result?.unclear === true || result?.answer?.trim()?.toUpperCase() === UNCLEAR_MARKER;
   const grounded = !cannotTell && (isDeterministicAnswer(result) || isGroundedAnswer(result));
   if (grounded && requireGrounded) result.answer = stripChannelMentions(result.answer);
+  const retrievalDetails = retrievalTrace(programId, effectiveQuestion);
+  let groundingDetails: Record<string, unknown> = {
+    verdict: grounded ? "supported" : "unsupported",
+    claims: [],
+    unsupported: [],
+    errors: grounded ? [] : ["answer did not pass the grounding boundary"],
+  };
+  if (result?.groundingVerdict || result?.evidence) {
+    try {
+      groundingDetails = answerVerifier.verify({
+        programId: programId || "",
+        verdict: result.groundingVerdict,
+        evidence: result.evidence,
+        fixtureClaims: (result as any).fixtureClaims,
+      });
+    } catch (error: unknown) {
+      groundingDetails = { verdict: "unsupported", claims: [], unsupported: [], errors: [errorMessage(error)] };
+    }
+  }
   trace.set({
     retrievalHit: Boolean(result?.source && result.source.trim().toUpperCase() !== "NONE"),
     groundingPass: grounded,
@@ -951,6 +1034,20 @@ async function respond({
   }
 
   await supportTicketReady;
+  const traceTicket =
+    inHelpChannel && !programs.isShadow(prog) ? db.getTicketByThreadTs(threadTs, workspaceId, programId) : null;
+  if (traceTicket) traceTicketId = traceTicket.id;
+  appendAnswerTrace("engagement", {
+    role,
+    addressed: isAddressed,
+    intent: engaged.intent,
+    engaged: engaged.engage,
+    classifier: engaged.source,
+    classifierError: engaged.error || null,
+  });
+  appendAnswerTrace("retrieval", { question: effectiveQuestion, sources: retrievalDetails });
+  appendAnswerTrace("grounding", { grounded, ...groundingDetails });
+  appendAnswerTrace("decision", { expectedAction: action, reason: plan.reason });
 
   if (action === "reply") {
     const text = reply.withReplySignature(`${result.answer}${reply.sourceLineFor(result.source, prog)}`, prog);
@@ -977,12 +1074,14 @@ async function respond({
       programId,
       linkContext: hasLinkContext,
     });
+    appendAnswerTrace("final", { action: "reply", reason: plan.reason });
     trace.finish({ finalAction: "reply", reason: plan.reason });
     return true;
   }
 
   if (action === "reply_chat" || action === "escalate_and_reply_chat") {
-    if (action === "escalate_and_reply_chat") await handOff();
+    if (action === "escalate_and_reply_chat")
+      await handOff("chat answer was not verified from program sources", result.source ? [result.source] : []);
     if (threadTs) db.recordAnsweredThread({ question: trimmed, channel, threadTs });
     await waitForSeed();
     await publishReply({
@@ -1006,12 +1105,16 @@ async function respond({
       programId,
       linkContext: hasLinkContext,
     });
+    appendAnswerTrace("final", { action, reason: plan.reason });
     trace.finish({ finalAction: action, reason: plan.reason });
     return true;
   }
 
   if (action === "escalate" || action === "escalate_and_uncertain") {
-    await handOff();
+    await handOff(
+      cannotTell ? "Pixie could not verify an answer" : "no supported answer was found",
+      result.source ? [result.source] : [],
+    );
     if (action === "escalate_and_uncertain") {
       const text = uncertaintyText(prog, { escalated: true });
       await waitForSeed();
@@ -1039,6 +1142,7 @@ async function respond({
     );
     if (engaged.source === "jev" && engaged.engage)
       db.recordMetric("jev_downstream_block", Date.now() - startedAt, "ungrounded", programId);
+    appendAnswerTrace("final", { action, reason: plan.reason });
     trace.finish({ finalAction: action, reason: plan.reason });
     return true;
   }
@@ -1060,6 +1164,7 @@ async function respond({
     context.addToThread(threadTs, "assistant", text, null, channel);
     context.updateUserHistory(userId, trimmed, false);
     db.recordMetric("fallback", Date.now() - startedAt, "unverified", programId);
+    appendAnswerTrace("final", { action: "uncertain", reason: plan.reason });
     trace.finish({ finalAction: "uncertain", reason: plan.reason });
     return true;
   }
@@ -1068,6 +1173,7 @@ async function respond({
   db.recordMetric("silent", Date.now() - startedAt, grounded ? "unaddressed" : "ungrounded", programId);
   if (engaged.source === "jev" && engaged.engage && !grounded)
     db.recordMetric("jev_downstream_block", Date.now() - startedAt, "ungrounded", programId);
+  appendAnswerTrace("final", { action: "silence", reason: "ungrounded" });
   trace.finish({ finalAction: "silence", reason: "ungrounded" });
   return false;
 }

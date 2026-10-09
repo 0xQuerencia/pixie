@@ -121,6 +121,18 @@ function preview(programId: string, now = Date.now()) {
       programId,
       now - p.tracesDays * DAY_MS,
     ).n,
+    supportMemory: countFor(
+      h,
+      "SELECT COUNT(*) AS n FROM support_memory WHERE program_id = ? AND created_at < ?",
+      programId,
+      now - p.contextDays * DAY_MS,
+    ).n,
+    answerTraces: countFor(
+      h,
+      "SELECT COUNT(*) AS n FROM answer_traces WHERE program_id = ? AND created_at < ?",
+      programId,
+      now - p.tracesDays * DAY_MS,
+    ).n,
     auditEligible: 0,
   };
 }
@@ -146,6 +158,14 @@ function sweepProgram(programId: string, { dryRun = true, now = Date.now() }: { 
       now - p.analyticsDays * DAY_MS,
     );
     h.query("DELETE FROM doc_gaps WHERE program_id = ? AND created_at < ?").run(programId, now - p.tracesDays * DAY_MS);
+    h.query("DELETE FROM support_memory WHERE program_id = ? AND created_at < ?").run(
+      programId,
+      now - p.contextDays * DAY_MS,
+    );
+    h.query("DELETE FROM answer_traces WHERE program_id = ? AND created_at < ?").run(
+      programId,
+      now - p.tracesDays * DAY_MS,
+    );
     h.query("DELETE FROM sla_notifications WHERE program_id = ? AND sent_at < ?").run(
       programId,
       now - p.analyticsDays * DAY_MS,

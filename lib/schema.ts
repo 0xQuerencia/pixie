@@ -28,6 +28,23 @@ CREATE TABLE IF NOT EXISTS threads (
   updated_at  INTEGER NOT NULL
 );
 
+-- Bounded, program-and-user scoped conversation context. These rows are never
+-- part of retrieval or the trusted knowledge corpus.
+CREATE TABLE IF NOT EXISTS support_memory (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  program_id        TEXT NOT NULL,
+  user_id           TEXT NOT NULL,
+  kind              TEXT NOT NULL,
+  value             TEXT NOT NULL,
+  source_thread_ts  TEXT,
+  source_ticket_id  INTEGER,
+  confidence        REAL NOT NULL DEFAULT 1,
+  created_at        INTEGER NOT NULL,
+  expires_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_support_memory_scope
+  ON support_memory(program_id, user_id, expires_at DESC, created_at DESC);
+
 -- The last handful of things each person said, verbatim. The intent gate reads
 -- these: "it still doesnt work" is chat after a joke and a cry for help after
 -- twenty minutes of debugging, and the message alone cannot tell you which.
@@ -208,6 +225,24 @@ CREATE TABLE IF NOT EXISTS answered_threads (
   thread_ts   TEXT NOT NULL,
   created_at  INTEGER NOT NULL
 );
+
+-- Structured operational traces used by the Wizard inspector. Payloads are
+-- sanitized before insertion and expire independently of ticket history.
+CREATE TABLE IF NOT EXISTS answer_traces (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  program_id    TEXT NOT NULL,
+  ticket_id     INTEGER,
+  thread_ts     TEXT,
+  request_id    TEXT,
+  stage         TEXT NOT NULL,
+  payload_json  TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_answer_traces_ticket
+  ON answer_traces(program_id, ticket_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_answer_traces_thread
+  ON answer_traces(program_id, thread_ts, created_at ASC);
 `;
 
 const MIGRATIONS = [
@@ -483,6 +518,8 @@ CREATE INDEX IF NOT EXISTS idx_radar_program_status ON radar_signals(program_id,
 CREATE INDEX IF NOT EXISTS idx_incident_reports_incident ON incident_reports(incident_id, notified_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_program_time ON llm_usage(program_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_request ON llm_usage(request_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_support_memory_expiry ON support_memory(expires_at);
+CREATE INDEX IF NOT EXISTS idx_answer_traces_expiry ON answer_traces(expires_at);
 `;
 
 export = { SCHEMA, MIGRATIONS, POST_MIGRATION_SCHEMA };

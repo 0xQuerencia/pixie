@@ -189,11 +189,16 @@ function ticketDetailScoped(programId: string, ticketId: number) {
   const ticket = db.getTicket(Number(ticketId));
   if (!ticket || ticket.program_id !== programId) return { error: "ticket not found" };
   const resolutionSummary = ticket.resolution_summary || null;
+  let traces: unknown[] = [];
+  try {
+    traces = require("../pipeline/traceStore").forTicket(programId, ticket.id);
+  } catch (_) {}
   return {
     ticket: { ...ticket, resolutionSummary },
     resolutionSummary,
     events: db.listTicketEvents(ticket.id),
     notes: db.listTicketNotes(ticket.id),
+    traces,
   };
 }
 

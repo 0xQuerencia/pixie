@@ -1793,7 +1793,8 @@ test("pingRecommendedHelper @-mentions the best-matched helper, once, and only w
   assert.equal(posts[0].channel, "C-ping-a");
   assert.equal(posts[0].thread_ts, "t-ping-a");
   assert.match(posts[0].text, /<@U-REVIEWS>/);
-  assert.doesNotMatch(posts[0].text, /verified|repl|declared/, "the ping names the person, not the scoring");
+  assert.match(posts[0].text, /\*Question:\*/);
+  assert.doesNotMatch(posts[0].text, /chain of thought/i, "the packet contains bounded handoff context only");
 
   assert.equal(await tickets.pingRecommendedHelper({ client, ticket, program }), null);
   assert.equal(posts.length, 1);

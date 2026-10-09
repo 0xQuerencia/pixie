@@ -16,6 +16,7 @@
     "test:file": "bun test",
     "test:wizard": "bun scripts/run-tests.mjs --wizard",
     "test:all": "bun scripts/run-tests.mjs --all",
+    "eval:support": "bun scripts/run-support-evals.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "format": "prettier --write \"index.ts\" \"lib/**/*.ts\"",
     "format:check": "prettier --check \"index.ts\" \"lib/**/*.ts\""

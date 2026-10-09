@@ -4,6 +4,7 @@ import gapClusters = require("./gapClusters");
 import programs = require("./programs");
 import slackMessages = require("./slackMessages");
 import retrieve = require("./retrieve");
+import semanticSimilarity = require("./semanticSimilarity");
 import type { SlackClient } from "./types";
 
 interface Row {
@@ -33,6 +34,15 @@ const INCIDENT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 function similarityScore(a: string, b: string): number {
   return gapClusters.pairOverlap(a, b);
+}
+
+// Incident matching is intentionally more forgiving than duplicate-ticket
+// matching. People describe the same outage with different verbs ("blank
+// page", "redirects back to login", "can't sign in"), so use the shared
+// semantic scorer only after the outage gate below has established that this
+// is an operational report.
+function incidentSimilarityScore(a: string, b: string): number {
+  return semanticSimilarity.score(a, b);
 }
 
 function isSimilar(a: string, b: string, threshold = SIMILARITY_THRESHOLD): boolean {
@@ -78,7 +88,7 @@ function pickBestIncident(question: string, active: Row[]): Row | null {
 }
 
 const OUTAGE_LANGUAGE =
-  /\b(?:down|offline|unavailable|broken|inaccessible|failing|failed|failure|error|issue|problem|outage|crash(?:ing)?|500)\b|\b(?:blank(?:\s+page)?|page\s+is\s+blank|not\s+(?:loading|load|working)|(?:isn'?t|is\s+not|can not|cannot|cant|can't|won't|wont|unable\s+to)\s+(?:load|open|access|reach|work))\b/i;
+  /\b(?:down|offline|unavailable|broken|inaccessible|failing|failed|failure|error|issue|problem|outage|crash(?:ing)?|500)\b|\b(?:blank(?:\s+page)?|page\s+is\s+blank|redirect(?:s|ed)?(?:\s+\w+){0,2}\s+back\s+to\s+(?:the\s+)?login|sends?\s+me\s+back\s+to\s+(?:the\s+)?login|can(?:not|'t|t)\s+sign\s*[- ]?in|login\s+(?:is\s+)?(?:broken|failing)|not\s+(?:loading|load|working)|(?:isn'?t|is\s+not|can not|cannot|cant|can't|won't|wont|unable\s+to)\s+(?:load|open|access|reach|work|sign\s*[- ]?in))\b/i;
 const ACCESS_LANGUAGE = /\b(?:site|website|webpage|page|portal|app|service|dashboard|load|open|access|reach)\b/i;
 const INCIDENT_NOISE = new Set([
   "down",
@@ -122,13 +132,58 @@ function incidentSimilarity(question: string, incident: Row): number {
     const incidentTermsForText = incidentTerms(text);
     const namesAffectedThing = [...questionTerms].some((term) => incidentTermsForText.has(term));
     if (!namesAffectedThing) continue;
-    const wordingScore = similarityScore(question, String(text));
+    const wordingScore = incidentSimilarityScore(question, String(text));
     const genericServiceMatch = questionTerms.has("incident_service") && incidentTermsForText.has("incident_service");
     if (wordingScore >= SIMILARITY_THRESHOLD || genericServiceMatch) {
       score = Math.max(score, wordingScore, genericServiceMatch ? 0.5 : 0);
     }
   }
   return score;
+}
+
+function incidentClusterQuestions(questions: string[], threshold = SIMILARITY_THRESHOLD): string[][] {
+  const parents = questions.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parents[root] !== root) root = parents[root];
+    while (parents[index] !== index) {
+      const next = parents[index];
+      parents[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number) => {
+    const a = find(left);
+    const b = find(right);
+    if (a !== b) parents[b] = a;
+  };
+
+  for (let left = 0; left < questions.length; left += 1) {
+    for (let right = left + 1; right < questions.length; right += 1) {
+      const leftOutage = OUTAGE_LANGUAGE.test(questions[left]);
+      const rightOutage = OUTAGE_LANGUAGE.test(questions[right]);
+      if (leftOutage && rightOutage) {
+        const leftTerms = incidentTerms(questions[left]);
+        const rightTerms = incidentTerms(questions[right]);
+        const sharedService = [...leftTerms].some((term) => rightTerms.has(term));
+        const similar = incidentSimilarityScore(questions[left], questions[right]);
+        if (sharedService && similar >= threshold) union(left, right);
+      } else if (!leftOutage && !rightOutage && similarityScore(questions[left], questions[right]) >= threshold) {
+        // Preserve the existing duplicate-question burst behavior for ordinary
+        // support gaps; semantic outage grouping above is the additional gate.
+        union(left, right);
+      }
+    }
+  }
+
+  const groups = new Map<number, string[]>();
+  questions.forEach((question, index) => {
+    const root = find(index);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root)!.push(question);
+  });
+  return [...groups.values()];
 }
 
 function burstConfidence(count: number): number {
@@ -308,7 +363,7 @@ function detectBursts({
   const rows = fetchRecentTickets(programId, now - windowMs);
   if (rows.length < threshold) return { candidates: [] };
 
-  const groups = gapClusters.clusterQuestions(rows.map((r) => String(r.question || "")));
+  const groups = incidentClusterQuestions(rows.map((r) => String(r.question || "")));
   const questionIndex = buildQuestionIndex(rows);
   const used = new Set<number>();
   const out: Row[] = [];
@@ -583,4 +638,5 @@ export = {
   recordAffectedReport,
   affectedReports,
   notifyAffectedUsers,
+  incidentClusterQuestions,
 };

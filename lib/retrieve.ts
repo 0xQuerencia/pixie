@@ -1,4 +1,5 @@
 const log = require("./log");
+const semanticSimilarity = require("./semanticSimilarity");
 
 type Domain = "hardware" | "software" | "general";
 type Section = [string, string];
@@ -49,6 +50,12 @@ interface DomainSignals {
 interface ScoredChunk {
   chunk: Chunk;
   value: number;
+}
+interface DetailedScore {
+  chunk: Chunk;
+  lexical: number;
+  semantic: number;
+  total: number;
 }
 interface SelectContextOptions {
   generated: Section[];
@@ -592,13 +599,43 @@ function score(index: SearchIndex, queryTerms: string[]): ScoredChunk[] {
     .sort((a, b) => b.value - a.value);
 }
 
-function selectChunks(index: SearchIndex, question: string, budget = DEFAULT_BUDGET): Chunk[] {
+/**
+ * Return the lexical score and a bounded paraphrase signal separately. The
+ * semantic signal is reranking-only: policy/domain contradiction filters are
+ * applied before it can contribute, and it can never create source content.
+ */
+function scoreDetailed(index: SearchIndex, question: string): DetailedScore[] {
   const queryTerms = tokenize(question);
   if (queryTerms.length === 0) return [];
+  const { docs, docFreq, avgLength } = index;
+  const totalDocs = docs.length;
+  const flags = classifyQuery(queryTerms);
+  return docs
+    .map((doc) => {
+      const base = baseScore(doc, queryTerms, totalDocs, docFreq, avgLength);
+      const lexical = base > 0 ? boostedValue(base, doc, flags) : 0;
+      // Run the existing hard filters with a neutral lexical score so a fuzzy
+      // match cannot bypass exact software/hardware or policy exclusions.
+      const eligible = boostedValue(1, doc, flags) > 0;
+      const semantic = eligible
+        ? semanticSimilarity.score(question, `${doc.chunk.heading || ""}\n${doc.chunk.text}`.slice(0, 2400))
+        : 0;
+      const semanticBonus = semantic >= 0.18 ? Math.min(semantic * 1.25, 1.25) : 0;
+      return {
+        chunk: doc.chunk,
+        lexical,
+        semantic,
+        total: lexical + semanticBonus,
+      };
+    })
+    .filter((row) => row.total > 0)
+    .sort((a, b) => b.total - a.total || b.lexical - a.lexical);
+}
 
+function selectChunks(index: SearchIndex, question: string, budget = DEFAULT_BUDGET): Chunk[] {
   const selected: Chunk[] = [];
   let used = 0;
-  for (const { chunk } of score(index, queryTerms)) {
+  for (const { chunk } of scoreDetailed(index, question)) {
     if (used + chunk.text.length > budget) break;
     selected.push(chunk);
     used += chunk.text.length;
@@ -675,6 +712,7 @@ export = {
   chunkSections,
   buildIndex,
   score,
+  scoreDetailed,
   selectChunks,
   selectContext,
   MIN_CHUNK,

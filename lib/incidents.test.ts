@@ -79,6 +79,18 @@ test("manual incidents are confirmed immediately and outage paraphrases match wi
   assert.equal(incidents.matchActiveIncident({ programId: "dec-manual", question: "when does review finish?" }), null);
 });
 
+test("semantic incident clustering groups outage paraphrases but gates ordinary questions", () => {
+  const groups = incidents.incidentClusterQuestions([
+    "The portal is down",
+    "The site redirects me back to login",
+    "How do I submit a project?",
+  ]);
+  const outageGroup = groups.find((group) => group.includes("The portal is down"));
+  assert.ok(outageGroup);
+  assert.ok(outageGroup.includes("The site redirects me back to login"));
+  assert.ok(!outageGroup.includes("How do I submit a project?"));
+});
+
 test("notifyAffectedUsers is idempotent and retry-safe: only unnotified reports are messaged, failures don't block the rest", async () => {
   db.saveProgram({ id: "dec-c", name: "DecC" });
   programs.invalidate();

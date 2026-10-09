@@ -8,7 +8,7 @@ const db = require("./db");
 const log = require("./log");
 const firecrawl = require("./firecrawl");
 const validator = require("./validator");
-const grounding = require("./grounding");
+const answerVerifier = require("./answerVerifier");
 import type { Program, ProgramSource } from "./types";
 
 type ProgramLike = Partial<Program> & { id?: string };
@@ -170,13 +170,13 @@ function exactClaimAllowed(result: AnswerResult | null, prog: ProgramLike | stri
   if (result.groundingVerdict || result.evidence) {
     const programId = idOf(prog);
     if (!programId) return false;
-    const checked = grounding.validateClaimSupport({
+    const checked = answerVerifier.verify({
       verdict: result.groundingVerdict,
       evidence: result.evidence,
       programId,
       fixtureClaims: result.fixtureClaims || [],
     });
-    if (!checked.supported) return false;
+    if (!checked.sendable) return false;
     structuredSupport = true;
   }
 
