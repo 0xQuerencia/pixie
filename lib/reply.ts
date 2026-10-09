@@ -2,9 +2,241 @@ const knowledge = require("./knowledge");
 const log = require("./log");
 const { config } = require("./config");
 
-const THINKING = "_thinking..._";
+const STREAMING_WORDS = [
+  "Accomplishing",
+  "Actioning",
+  "Actualizing",
+  "Architecting",
+  "Baking",
+  "Beaming",
+  "Beboppin'",
+  "Befuddling",
+  "Billowing",
+  "Blanching",
+  "Bloviating",
+  "Boogieing",
+  "Boondoggling",
+  "Booping",
+  "Bootstrapping",
+  "Brewing",
+  "Bunning",
+  "Burrowing",
+  "Calculating",
+  "Canoodling",
+  "Caramelizing",
+  "Cascading",
+  "Catapulting",
+  "Cerebrating",
+  "Channeling",
+  "Channelling",
+  "Choreographing",
+  "Churning",
+  "Clauding",
+  "Coalescing",
+  "Cogitating",
+  "Combobulating",
+  "Composing",
+  "Computing",
+  "Concocting",
+  "Considering",
+  "Contemplating",
+  "Cooking",
+  "Crafting",
+  "Creating",
+  "Crunching",
+  "Crystallizing",
+  "Cultivating",
+  "Deciphering",
+  "Deliberating",
+  "Determining",
+  "Dilly-dallying",
+  "Discombobulating",
+  "Doing",
+  "Doodling",
+  "Drizzling",
+  "Ebbing",
+  "Effecting",
+  "Elucidating",
+  "Embellishing",
+  "Enchanting",
+  "Envisioning",
+  "Evaporating",
+  "Fermenting",
+  "Fiddle-faddling",
+  "Finagling",
+  "Flambéing",
+  "Flibbertigibbeting",
+  "Flowing",
+  "Flummoxing",
+  "Fluttering",
+  "Forging",
+  "Forming",
+  "Frolicking",
+  "Frosting",
+  "Gallivanting",
+  "Galloping",
+  "Garnishing",
+  "Generating",
+  "Gesticulating",
+  "Germinating",
+  "Gitifying",
+  "Grooving",
+  "Gusting",
+  "Harmonizing",
+  "Hashing",
+  "Hatching",
+  "Herding",
+  "Honking",
+  "Hullaballooing",
+  "Hyperspacing",
+  "Ideating",
+  "Imagining",
+  "Improvising",
+  "Incubating",
+  "Inferring",
+  "Infusing",
+  "Ionizing",
+  "Jitterbugging",
+  "Julienning",
+  "Kneading",
+  "Leavening",
+  "Levitating",
+  "Lollygagging",
+  "Manifesting",
+  "Marinating",
+  "Meandering",
+  "Metamorphosing",
+  "Misting",
+  "Moonwalking",
+  "Moseying",
+  "Mulling",
+  "Mustering",
+  "Musing",
+  "Nebulizing",
+  "Nesting",
+  "Newspapering",
+  "Noodling",
+  "Nucleating",
+  "Orbiting",
+  "Orchestrating",
+  "Osmosing",
+  "Perambulating",
+  "Percolating",
+  "Perusing",
+  "Philosophising",
+  "Photosynthesizing",
+  "Pollinating",
+  "Pondering",
+  "Pontificating",
+  "Pouncing",
+  "Precipitating",
+  "Prestidigitating",
+  "Processing",
+  "Proofing",
+  "Propagating",
+  "Puttering",
+  "Puzzling",
+  "Quantumizing",
+  "Razzle-dazzling",
+  "Razzmatazzing",
+  "Recombobulating",
+  "Reticulating",
+  "Roosting",
+  "Ruminating",
+  "Sautéing",
+  "Scampering",
+  "Schlepping",
+  "Scurrying",
+  "Seasoning",
+  "Shenaniganing",
+  "Shimmying",
+  "Simmering",
+  "Skedaddling",
+  "Sketching",
+  "Slithering",
+  "Smooshing",
+  "Sock-hopping",
+  "Spelunking",
+  "Spinning",
+  "Sprouting",
+  "Stewing",
+  "Sublimating",
+  "Swirling",
+  "Swooping",
+  "Symbioting",
+  "Synthesizing",
+  "Tempering",
+  "Thinking",
+  "Thundering",
+  "Tinkering",
+  "Tomfoolering",
+  "Topsy-turvying",
+  "Transfiguring",
+  "Transmuting",
+  "Twisting",
+  "Undulating",
+  "Unfurling",
+  "Unravelling",
+  "Vibing",
+  "Waddling",
+  "Wandering",
+  "Warping",
+  "Whatchamacalliting",
+  "Whirlpooling",
+  "Whirring",
+  "Whisking",
+  "Wibbling",
+  "Working",
+  "Wrangling",
+  "Zesting",
+  "Zigzagging",
+] as const;
+
+const STREAMING_WORD_INTERVAL_MS = 900;
+const THINKING = `_${STREAMING_WORDS[0]}..._`;
 
 const STREAM_UPDATE_MS = 350;
+
+type ThinkingSpinner = { stop: () => Promise<void> };
+const thinkingSpinners = new Map<string, ThinkingSpinner>();
+
+function spinnerKey(channel: string, ts: string) {
+  return `${channel}\u0000${ts}`;
+}
+
+async function stopThinkingSpinner(channel: string, ts: string | null | undefined) {
+  if (!ts) return;
+  const key = spinnerKey(channel, ts);
+  const spinner = thinkingSpinners.get(key);
+  if (!spinner) return;
+  thinkingSpinners.delete(key);
+  await spinner.stop();
+}
+
+function startThinkingSpinner(client: SlackClient, channel: string, ts: string) {
+  if (!client?.chat || typeof client.chat.update !== "function") return;
+
+  let wordIndex = 0;
+  let inFlight: Promise<void> | null = null;
+  const key = spinnerKey(channel, ts);
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    wordIndex = (wordIndex + 1) % STREAMING_WORDS.length;
+    inFlight = Promise.resolve()
+      .then(() => client.chat.update({ channel, ts, text: `_${STREAMING_WORDS[wordIndex]}..._` }))
+      .catch((error: unknown) => log.debug("respond", `thinking spinner update failed: ${errorMessage(error)}`))
+      .finally(() => {
+        inFlight = null;
+      });
+  }, STREAMING_WORD_INTERVAL_MS);
+
+  thinkingSpinners.set(key, {
+    stop: async () => {
+      clearInterval(timer);
+      await inFlight;
+    },
+  });
+}
 
 const programs = require("./programs");
 import type { Program, ProgramSource, SlackClient } from "./types";
@@ -154,7 +386,11 @@ function blocksFor(text: string): ReplyBlock[] {
 
 function postThinking(client: SlackClient, channel: string, threadTs: string, program: ProgramLike | null = null) {
   return sendProgramMessage({ client, program, channel, threadTs, text: THINKING })
-    .then((res: { ts?: string }) => res.ts || null)
+    .then((res: { ts?: string }) => {
+      const ts = res.ts || null;
+      if (ts) startThinkingSpinner(client, channel, ts);
+      return ts;
+    })
     .catch((error: unknown) => {
       log.debug("respond", `could not post placeholder: ${errorMessage(error)}`);
       return null;
@@ -248,8 +484,9 @@ function makeStreamWriter({
     const text = sent;
     inFlight = inFlight
       .then(() => ensurePlaceholder())
-      .then((ts) => {
+      .then(async (ts) => {
         if (!ts) return null;
+        await stopThinkingSpinner(channel, ts);
         if (threadTs && newlySilenced(threadTs, silencedBefore)) return null;
         return client.chat.update({ channel, ts, text: plainDashes(text) });
       })
@@ -334,6 +571,7 @@ async function finalize(
     ...(cleanBlocks ? { blocks: plainDashesInBlocks(cleanBlocks) } : {}),
   };
   const placeholderTs = await placeholder;
+  await stopThinkingSpinner(channel, placeholderTs);
 
   const suppressed = decidePostSuppression({ program, threadTs, placeholderTs, silencedBefore });
   if (suppressed) {
@@ -369,7 +607,9 @@ async function discardPlaceholder(
 ) {
   try {
     const ts = await Promise.resolve(placeholder).catch(() => null);
-    if (!ts || !client?.chat?.delete) return;
+    if (!ts) return;
+    await stopThinkingSpinner(channel, ts);
+    if (!client?.chat?.delete) return;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await client.chat.delete({ channel, ts });
@@ -480,5 +720,7 @@ export = {
   decidePostSuppression,
   silenceState,
   THINKING,
+  STREAMING_WORDS,
+  STREAMING_WORD_INTERVAL_MS,
   STREAM_UPDATE_MS,
 };

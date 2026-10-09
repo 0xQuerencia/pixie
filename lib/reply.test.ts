@@ -83,6 +83,25 @@ function fakeClient(): TestClient {
   };
 }
 
+test("streaming placeholder uses the full word spinner and stops cleanly", async () => {
+  const client = fakeClient();
+  assert.equal(reply.STREAMING_WORDS.length, 187);
+  assert.equal(reply.STREAMING_WORDS[0], "Accomplishing");
+  assert.equal(reply.STREAMING_WORDS.at(-1), "Zigzagging");
+
+  const ts = await reply.postThinking(client, "C1", "spinner-thread");
+  assert.equal(ts, "posted-1");
+  assert.equal(client.calls.posts[0]?.text, "_Accomplishing..._");
+
+  await new Promise<void>((resolve) => setTimeout(resolve, reply.STREAMING_WORD_INTERVAL_MS + 40));
+  assert.equal(client.calls.updates[0]?.text, "_Actioning..._");
+
+  await reply.discardPlaceholder(client, "C1", ts);
+  const updatesAfterStop = client.calls.updates.length;
+  await new Promise<void>((resolve) => setTimeout(resolve, reply.STREAMING_WORD_INTERVAL_MS + 40));
+  assert.equal(client.calls.updates.length, updatesAfterStop, "discarding the placeholder stops the spinner");
+});
+
 test("withReplySignature appends a program's catchphrase to an answer", () => {
   const prog = { id: "demo", replySignature: "stay helpful :demo:" };
   assert.equal(

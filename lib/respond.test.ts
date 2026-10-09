@@ -10,6 +10,7 @@ const cache = require("./cache");
 const intent = require("./intent");
 const link = require("./link");
 const lookup = require("./lookup");
+const reply = require("./reply");
 const context = require("./context");
 const { config } = require("./config");
 
@@ -263,7 +264,7 @@ test("respond streams the answer into the placeholder instead of waiting for all
 
     assert.equal(replied, true);
     assert.equal(client.calls.posts.length, 1);
-    assert.equal(client.calls.posts[0], "_thinking..._");
+    assert.equal(client.calls.posts[0], reply.THINKING);
     assert.ok(client.calls.updates.length >= 1, "expected at least one streamed update");
     assert.match(client.calls.updates[client.calls.updates.length - 1], /chips/);
   } finally {
