@@ -61,6 +61,24 @@ test("permanent Slack errors are not retried forever", async () => {
   assert.equal(calls, 1);
 });
 
+test("ambiguous post failures opt out of automatic retries", async () => {
+  let calls = 0;
+  const uncertain = {
+    chat: {
+      postMessage: async () => {
+        calls++;
+        throw new Error("transport outcome unknown");
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => sendProgramMessage({ client: uncertain, channel: "C1", text: "placeholder", retryAmbiguous: false }),
+    /transport outcome unknown/,
+  );
+  assert.equal(calls, 1);
+});
+
 test("Acme's branding can never appear on a message sent for a different program", async () => {
   const sentPayloads: any[] = [];
   const client = {
