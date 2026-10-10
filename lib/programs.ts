@@ -134,6 +134,7 @@ function normalizeProgram(p: RawProgramConfig): ProgramRecord {
         : ticketsEnabled
           ? ticketCategory.defaultTaxonomy()
           : null,
+    // Deprecated compatibility setting; runtime learning always stays review-safe.
     learning: p.learning === "review" || p.learning_mode === "review" ? "review" : "auto",
     ticketVisibility: ["thread", "organizer", "dashboard"].includes(p.ticketVisibility || p.ticket_visibility || "")
       ? ((p.ticketVisibility || p.ticket_visibility) as Program["ticketVisibility"])

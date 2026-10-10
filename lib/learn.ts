@@ -32,6 +32,7 @@ const JUDGE_MAX_TOKENS = 5;
 const JUDGE_TIMEOUT_MS = 10000;
 
 const CORPUS_FACT_LIMIT = 50;
+const REPORT_DRAFT_SOURCE_PREFIX = "gap-draft:";
 
 function parseTeach(text: string): { question: string; answer: string } | null {
   const raw = (text || "").trim();
@@ -96,9 +97,9 @@ function captureFromThread({
   programId?: string | null;
   autoApprove?: boolean;
 }): number | null {
-  const status = autoApprove ? APPROVED : PENDING;
+  void autoApprove;
+  const status = PENDING;
   const id = db.addLearnedFact({ question, answer, authorId, status, sourceTs: threadTs, channel, programId });
-  if (id && status === APPROVED) invalidateCorpus();
   return id;
 }
 
@@ -171,6 +172,9 @@ function approved(limit = 200, programId: string | null = null): Fact[] {
 }
 
 function approve(id: number): boolean {
+  const fact = db.getLearnedFactById(id);
+  if (!fact || (fact.status !== "candidate" && fact.status !== PENDING)) return false;
+  if (!fact.program_id && String(fact.source_ts || "").startsWith(REPORT_DRAFT_SOURCE_PREFIX)) return false;
   const ok = db.setLearnedStatus(id, APPROVED);
   if (ok) invalidateCorpus();
   return ok;

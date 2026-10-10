@@ -23,11 +23,13 @@ interface SqlRow {
 }
 interface TopicRow {
   topic: string;
+  program_id: string | null;
   was_helpful: number;
 }
 interface GapSummaryRow {
   id: number;
   question: string;
+  program_id: string | null;
   ask_count: number;
   askers: number;
   last_asked: number;
@@ -216,6 +218,10 @@ const MAX_USER_MESSAGES = 12;
 const USER_MESSAGE_WINDOW_MS = 2 * 60 * 60 * 1000;
 const USER_MESSAGE_TTL_MS = 6 * 60 * 60 * 1000;
 
+const USER_TOPICS_MIGRATION = "user_topics_scope_v1";
+const LEGACY_AUTO_LEARNED_MIGRATION = "legacy_auto_learned_v1";
+const REPORT_DRAFT_SOURCE_PREFIX = "gap-draft:";
+
 let db: DatabaseType | null = null;
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 const ephemeralThreadMessages = new Map<string, ThreadMessage[]>();
@@ -267,6 +273,73 @@ function backfillResolvedCredits(database: DatabaseType) {
   database.query("INSERT INTO ticket_metrics_migrations (version, applied_at) VALUES (?, ?)").run(version, now());
 }
 
+function invalidateKnowledgeMaps() {
+  try {
+    require("./knowledge").invalidate();
+  } catch (error: unknown) {
+    log.debug("db", `knowledge invalidation skipped: ${errorMessage(error)}`);
+  }
+}
+
+function invalidateTrustCaches() {
+  try {
+    require("./cache").clearCache();
+  } catch (error: unknown) {
+    log.debug("db", `answer cache invalidation skipped: ${errorMessage(error)}`);
+  }
+  invalidateKnowledgeMaps();
+}
+
+function ensureProgramScopedUserTopics(database: DatabaseType) {
+  if (database.query("SELECT 1 FROM schema_data_migrations WHERE version = ?").get(USER_TOPICS_MIGRATION)) return;
+
+  const columns = database.query<{ name: string; pk: number }, []>("PRAGMA table_info(user_topics)").all();
+  const programColumn = columns.find((column) => column.name === "program_id");
+  database.transaction(() => {
+    if (programColumn && programColumn.pk === 0) {
+      database.exec(`
+        CREATE TABLE user_topics_scoped (
+          user_id     TEXT NOT NULL,
+          topic       TEXT NOT NULL,
+          program_id  TEXT,
+          was_helpful INTEGER NOT NULL DEFAULT 1,
+          created_at  INTEGER NOT NULL,
+          PRIMARY KEY (user_id, topic, program_id)
+        );
+        INSERT INTO user_topics_scoped (user_id, topic, program_id, was_helpful, created_at)
+          SELECT user_id, topic, program_id, was_helpful, created_at FROM user_topics;
+        DROP TABLE user_topics;
+        ALTER TABLE user_topics_scoped RENAME TO user_topics;
+      `);
+    }
+    database
+      .query("INSERT INTO schema_data_migrations (version, applied_at) VALUES (?, ?)")
+      .run(USER_TOPICS_MIGRATION, now());
+  })();
+}
+
+function quarantineLegacyAutoLearned(database: DatabaseType) {
+  if (database.query("SELECT 1 FROM schema_data_migrations WHERE version = ?").get(LEGACY_AUTO_LEARNED_MIGRATION))
+    return;
+
+  let changedRows = 0;
+  database.transaction(() => {
+    changedRows = database
+      .query(
+        `UPDATE learned_facts
+            SET status = 'candidate', verified_at = NULL
+          WHERE status = 'approved' AND auto_learned = 1 AND superseded_by IS NULL`,
+      )
+      .run().changes;
+    if (changedRows > 0) database.query("DELETE FROM answer_cache").run();
+    database
+      .query("INSERT INTO schema_data_migrations (version, applied_at) VALUES (?, ?)")
+      .run(LEGACY_AUTO_LEARNED_MIGRATION, now());
+  })();
+
+  if (changedRows > 0) invalidateKnowledgeMaps();
+}
+
 function open(filename = process.env.PIXIE_DB_PATH || DEFAULT_PATH) {
   if (db) return db;
   db = new Database(filename, { create: true });
@@ -275,7 +348,9 @@ function open(filename = process.env.PIXIE_DB_PATH || DEFAULT_PATH) {
   db.exec("PRAGMA busy_timeout = 5000");
   db.exec(SCHEMA);
   migrate(db);
+  ensureProgramScopedUserTopics(db);
   backfillResolvedCredits(db);
+  quarantineLegacyAutoLearned(db);
   db.exec(POST_MIGRATION_SCHEMA);
   log.info("db", `opened ${filename}`);
   return db;
@@ -288,7 +363,9 @@ function ensureSchema(filename: string | null = null) {
   database.exec("PRAGMA busy_timeout = 5000");
   database.exec(SCHEMA);
   migrate(database);
+  ensureProgramScopedUserTopics(database);
   backfillResolvedCredits(database);
+  quarantineLegacyAutoLearned(database);
   database.exec(POST_MIGRATION_SCHEMA);
   database.close();
 }
@@ -381,27 +458,69 @@ function recentUserMessages(
   return list.slice(-limit);
 }
 
-function recordTopic(userId: string, topic: string, wasHelpful = true) {
+function recordUserTopic(
+  userId: string,
+  topic: string,
+  wasHelpfulOrProgram: boolean | string | null = true,
+  programOrWasHelpful: string | boolean | null = null,
+) {
   if (!userId || !topic) return;
-  query(
-    `INSERT INTO user_topics (user_id, topic, was_helpful, created_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(user_id, topic) DO UPDATE SET created_at = excluded.created_at, was_helpful = excluded.was_helpful`,
-  ).run(userId, topic, wasHelpful ? 1 : 0, now());
+
+  const wasHelpful =
+    typeof wasHelpfulOrProgram === "boolean"
+      ? wasHelpfulOrProgram
+      : typeof programOrWasHelpful === "boolean"
+        ? programOrWasHelpful
+        : true;
+  const programId =
+    typeof wasHelpfulOrProgram === "string"
+      ? wasHelpfulOrProgram
+      : typeof programOrWasHelpful === "string"
+        ? programOrWasHelpful
+        : null;
+  const scope = programId === null ? "program_id IS NULL" : "program_id = ?";
+  const scopeParams = programId === null ? [] : [programId];
+  const updated = query(
+    `UPDATE user_topics SET created_at = ?, was_helpful = ?
+       WHERE user_id = ? AND topic = ? AND ${scope}`,
+  ).run(now(), wasHelpful ? 1 : 0, userId, topic, ...scopeParams);
+  if (updated.changes === 0) {
+    query("INSERT INTO user_topics (user_id, topic, program_id, was_helpful, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      userId,
+      topic,
+      programId,
+      wasHelpful ? 1 : 0,
+      now(),
+    );
+  }
 
   query(
     `DELETE FROM user_topics
-       WHERE user_id = ? AND topic NOT IN (
-         SELECT topic FROM user_topics WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
+       WHERE user_id = ? AND ${scope} AND topic NOT IN (
+         SELECT topic FROM user_topics WHERE user_id = ? AND ${scope} ORDER BY created_at DESC LIMIT ?
        )`,
-  ).run(userId, userId, MAX_USER_TOPICS);
+  ).run(userId, ...scopeParams, userId, ...scopeParams, MAX_USER_TOPICS);
+}
+
+function recordTopic(userId: string, topic: string, wasHelpful = true) {
+  recordUserTopic(userId, topic, wasHelpful);
+}
+
+function userTopics(userId: string, programId: string | null = null): TopicRow[] {
+  if (!userId) return [];
+  const cutoff = now() - HISTORY_TTL_MS;
+  if (programId) {
+    return query<TopicRow>(
+      "SELECT topic, program_id, was_helpful FROM user_topics WHERE user_id = ? AND program_id = ? AND created_at > ? ORDER BY created_at DESC",
+    ).all(userId, programId, cutoff);
+  }
+  return query<TopicRow>(
+    "SELECT topic, program_id, was_helpful FROM user_topics WHERE user_id = ? AND created_at > ? ORDER BY created_at DESC",
+  ).all(userId, cutoff);
 }
 
 function getTopics(userId: string): TopicRow[] {
-  if (!userId) return [];
-  const cutoff = now() - HISTORY_TTL_MS;
-  return query<TopicRow>(
-    "SELECT topic, was_helpful FROM user_topics WHERE user_id = ? AND created_at > ? ORDER BY created_at DESC",
-  ).all(userId, cutoff);
+  return userTopics(userId);
 }
 
 function recordGap(question: string, userId = null, channel = null, messageTs = null, programId = null) {
@@ -473,11 +592,12 @@ function topGaps(
   }
   const sql = `SELECT MIN(id) AS id,
                       ${normalizedQuestion} AS question,
+                      program_id,
                       COUNT(*) AS ask_count,
                       COUNT(DISTINCT user_id) AS askers,
                       MAX(created_at) AS last_asked
                FROM doc_gaps WHERE ${clauses.join(" AND ")}
-               GROUP BY ${normalizedQuestion}
+               GROUP BY ${normalizedQuestion}, program_id
                HAVING COUNT(DISTINCT user_id) >= ?
                ORDER BY askers DESC, ask_count DESC, last_asked DESC
                LIMIT ?`;
@@ -494,12 +614,30 @@ function setGapKind(id: number, kind: string) {
   query("UPDATE doc_gaps SET kind = ? WHERE id = ?").run(kind, id);
 }
 
-function gapThreads(question: string, limit = 2, sinceMs = 30 * 24 * 60 * 60 * 1000) {
+function gapThreads(
+  question: string,
+  limit = 2,
+  sinceMs = 30 * 24 * 60 * 60 * 1000,
+  programId: string | null | undefined = undefined,
+) {
+  const clauses = [
+    "LOWER(TRIM(question)) = LOWER(TRIM(?))",
+    "created_at > ?",
+    "channel IS NOT NULL",
+    "message_ts IS NOT NULL",
+  ];
+  const params: Array<string | number> = [question, now() - sinceMs];
+  if (programId === null) clauses.push("program_id IS NULL");
+  else if (programId !== undefined) {
+    clauses.push("program_id = ?");
+    params.push(programId);
+  }
+  params.push(limit);
   return query(
     `SELECT DISTINCT channel, message_ts FROM doc_gaps
-       WHERE LOWER(TRIM(question)) = LOWER(TRIM(?)) AND created_at > ? AND channel IS NOT NULL AND message_ts IS NOT NULL
+       WHERE ${clauses.join(" AND ")}
        ORDER BY created_at DESC LIMIT ?`,
-  ).all(question, now() - sinceMs, limit);
+  ).all(...params);
 }
 
 function gapCountsByKind(sinceMs = 7 * 24 * 60 * 60 * 1000, untilMs = null, programId = null) {
@@ -569,6 +707,7 @@ function addLearnedFact({
     autoLearned ? 1 : 0,
     now(),
   );
+  if (result.changes > 0 && status === "approved") invalidateTrustCaches();
   return result.changes > 0 ? Number(result.lastInsertRowid) : null;
 }
 
@@ -581,11 +720,15 @@ function assignUnownedLearnedFacts(ownerOfChannel: (channel: string | null) => s
     if (!owner) continue;
     assigned += update.run(owner, r.id).changes;
   }
+  if (assigned > 0) invalidateTrustCaches();
   return { unowned: rows.length, assigned, remaining: rows.length - assigned };
 }
 
 function listLearnedFacts(status: string, limit = 25, programId = null): LearnedFactRow[] {
-  const statusClause = status === "approved" ? "status = ? AND superseded_by IS NULL" : "status = ?";
+  const statusClause =
+    status === "approved"
+      ? "status = ? AND superseded_by IS NULL AND auto_learned = 0"
+      : "status = ? AND superseded_by IS NULL";
   if (programId) {
     return query<LearnedFactRow>(
       `SELECT * FROM learned_facts WHERE ${statusClause} AND program_id = ? ORDER BY created_at ASC LIMIT ?`,
@@ -600,7 +743,8 @@ function listLearnedFacts(status: string, limit = 25, programId = null): Learned
 function listReviewableLearnedFacts(programId: string, limit = 50) {
   return query(
     `SELECT * FROM learned_facts
-       WHERE program_id = ? AND (status = 'candidate' OR (status = 'approved' AND auto_learned = 1))
+       WHERE program_id = ? AND superseded_by IS NULL
+         AND (status = 'candidate' OR (status = 'approved' AND auto_learned = 1))
        ORDER BY COALESCE(last_supported_at, created_at) DESC LIMIT ?`,
   ).all(programId, limit);
 }
@@ -627,11 +771,12 @@ function refreshLearnedFact(id: number) {
 }
 
 function supersedeLearnedFact(id: number, supersededBy: unknown) {
-  return (
+  const changed =
     query(
       "UPDATE learned_facts SET status = 'superseded', superseded_by = ?, superseded_at = ? WHERE id = ? AND status NOT IN ('superseded', 'rejected')",
-    ).run(supersededBy, now(), id).changes > 0
-  );
+    ).run(supersededBy, now(), id).changes > 0;
+  if (changed) invalidateTrustCaches();
+  return changed;
 }
 
 function getLearnedFactById(id: number): LearnedFactRow | null {
@@ -641,13 +786,13 @@ function getLearnedFactById(id: number): LearnedFactRow | null {
 function approvedFacts(limit = 50, programId = null) {
   if (programId) {
     return query(
-      "SELECT question, answer, category, created_at, last_supported_at, support_count FROM learned_facts WHERE status = 'approved' AND superseded_by IS NULL AND program_id = ? ORDER BY COALESCE(last_supported_at, created_at) DESC LIMIT ?",
+      "SELECT question, answer, category, created_at, last_supported_at, support_count FROM learned_facts WHERE status = 'approved' AND auto_learned = 0 AND superseded_by IS NULL AND program_id = ? ORDER BY COALESCE(last_supported_at, created_at) DESC LIMIT ?",
     )
       .all(programId, limit)
       .reverse();
   }
   return query(
-    "SELECT question, answer, category, created_at, last_supported_at, support_count FROM learned_facts WHERE status = 'approved' AND superseded_by IS NULL AND program_id IS NULL ORDER BY COALESCE(last_supported_at, created_at) DESC LIMIT ?",
+    "SELECT question, answer, category, created_at, last_supported_at, support_count FROM learned_facts WHERE status = 'approved' AND auto_learned = 0 AND superseded_by IS NULL AND program_id IS NULL ORDER BY COALESCE(last_supported_at, created_at) DESC LIMIT ?",
   )
     .all(limit)
     .reverse();
@@ -656,8 +801,14 @@ function approvedFacts(limit = 50, programId = null) {
 function setLearnedStatus(id: number, status: string) {
   const result =
     status === "approved"
-      ? query("UPDATE learned_facts SET status = ?, verified_at = ? WHERE id = ?").run(status, now(), id)
-      : query("UPDATE learned_facts SET status = ? WHERE id = ?").run(status, id);
+      ? query(
+          `UPDATE learned_facts
+            SET status = ?, verified_at = ?, auto_learned = 0
+            WHERE id = ? AND status IN ('candidate', 'pending')
+              AND NOT (program_id IS NULL AND COALESCE(source_ts, '') LIKE ?)`,
+        ).run(status, now(), id, `${REPORT_DRAFT_SOURCE_PREFIX}%`)
+      : query("UPDATE learned_facts SET status = ?, verified_at = NULL WHERE id = ?").run(status, id);
+  if (result.changes > 0) invalidateTrustCaches();
   return result.changes > 0;
 }
 
@@ -665,11 +816,12 @@ function updateLearnedFact(
   id: number,
   { question = null, answer = null, category = null }: Record<string, unknown> = {},
 ) {
-  return (
+  const changed =
     query(
       `UPDATE learned_facts SET question = COALESCE(?, question), answer = COALESCE(?, answer), category = COALESCE(?, category) WHERE id = ?`,
-    ).run(question, answer, category, id).changes > 0
-  );
+    ).run(question, answer, category, id).changes > 0;
+  if (changed) invalidateTrustCaches();
+  return changed;
 }
 
 function candidateForTicket(ticketId: number) {
@@ -679,18 +831,26 @@ function candidateForTicket(ticketId: number) {
 }
 
 function deleteLearnedFact(id: number) {
-  return query("DELETE FROM learned_facts WHERE id = ?").run(id).changes > 0;
+  const changed = query("DELETE FROM learned_facts WHERE id = ?").run(id).changes > 0;
+  if (changed) invalidateTrustCaches();
+  return changed;
 }
 
 function deleteLearnedByStatus(status: string) {
   if (status === "all") {
-    return query("DELETE FROM learned_facts").run().changes;
+    const changed = query("DELETE FROM learned_facts").run().changes;
+    if (changed > 0) invalidateTrustCaches();
+    return changed;
   }
-  return query("DELETE FROM learned_facts WHERE status = ?").run(status).changes;
+  const changed = query("DELETE FROM learned_facts WHERE status = ?").run(status).changes;
+  if (changed > 0) invalidateTrustCaches();
+  return changed;
 }
 
 function deleteLearnedRange(fromId: number, toId: number) {
-  return query("DELETE FROM learned_facts WHERE id >= ? AND id <= ?").run(fromId, toId).changes;
+  const changed = query("DELETE FROM learned_facts WHERE id >= ? AND id <= ?").run(fromId, toId).changes;
+  if (changed > 0) invalidateTrustCaches();
+  return changed;
 }
 
 function pendingCountForQuestion(question: string) {
@@ -1873,6 +2033,8 @@ export = {
   getThreadMessages,
   recordUserMessage,
   recentUserMessages,
+  recordUserTopic,
+  userTopics,
   recordTopic,
   getTopics,
   recordGap,

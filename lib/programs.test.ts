@@ -87,6 +87,25 @@ test("source sharing is opt in and normalization keeps service flags", () => {
   );
 });
 
+test("legacy learning keys remain readable without changing review-safe runtime behavior", () => {
+  withEnvPrograms(
+    JSON.stringify([
+      { id: "legacy-auto-config", name: "Legacy Auto", learning: "auto" },
+      { id: "legacy-mode-config", name: "Legacy Mode", learning_mode: "auto" },
+      { id: "review-config", name: "Review", learning: "review" },
+    ]),
+    () => {
+      assert.equal(programs.get("legacy-auto-config").learning, "auto");
+      assert.equal(programs.get("legacy-mode-config").learning, "auto");
+      assert.equal(programs.get("review-config").learning, "review");
+    },
+  );
+
+  db.saveProgram({ id: "legacy-auto-db", name: "Legacy DB", learning: "auto" });
+  programs.invalidate();
+  assert.equal(programs.get("legacy-auto-db").learning, "auto");
+});
+
 test("workspace channel claims override matching channel configuration", () => {
   withEnvPrograms(
     JSON.stringify([

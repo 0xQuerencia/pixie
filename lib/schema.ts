@@ -60,11 +60,17 @@ CREATE TABLE IF NOT EXISTS user_messages (
 CREATE INDEX IF NOT EXISTS idx_user_messages_user ON user_messages(user_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS user_topics (
-  user_id    TEXT NOT NULL,
-  topic      TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  topic       TEXT NOT NULL,
+  program_id  TEXT,
   was_helpful INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (user_id, topic)
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, topic, program_id)
+);
+
+CREATE TABLE IF NOT EXISTS schema_data_migrations (
+  version    TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS answer_cache (
@@ -260,6 +266,7 @@ const MIGRATIONS = [
   ["programs", "scope", "ALTER TABLE programs ADD COLUMN scope TEXT DEFAULT 'any'"],
   ["learned_facts", "program_id", "ALTER TABLE learned_facts ADD COLUMN program_id TEXT"],
   ["doc_gaps", "program_id", "ALTER TABLE doc_gaps ADD COLUMN program_id TEXT"],
+  ["user_topics", "program_id", "ALTER TABLE user_topics ADD COLUMN program_id TEXT"],
 
   [
     "gap_rejections",

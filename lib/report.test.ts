@@ -231,6 +231,25 @@ test("gatherThreadContext pulls the real thread(s) behind a question", async () 
   assert.match(context, /finish your ship requirement/);
 });
 
+test("gatherThreadContext stays within the gap's program when scoped", async () => {
+  db.handle().query("DELETE FROM doc_gaps").run();
+  db.recordGap("same scoped question", "U1", "C-program-a", "300.1", "report-program-a");
+  db.recordGap("same scoped question", "U2", "C-program-b", "300.2", "report-program-b");
+
+  const fetched: ThreadReply[] = [];
+  const client = {
+    conversations: {
+      replies: async ({ channel, ts }: ThreadReply) => {
+        fetched.push({ channel, ts });
+        return { messages: [{ text: "the answer" }] };
+      },
+    },
+  };
+
+  await report.gatherThreadContext(client, "same scoped question", "report-program-a");
+  assert.deepEqual(fetched, [{ channel: "C-program-a", ts: "300.1" }]);
+});
+
 test("gatherThreadContext skips a thread whose fetch fails rather than throwing", async () => {
   db.handle().query("DELETE FROM doc_gaps").run();
   db.recordGap("does this explode", "U1", "C1", "200.1");
@@ -261,6 +280,32 @@ test("draftGaps queues a PENDING learned fact per unclassified DOCS gap", async 
   assert.equal(rows[0].question, "how do i export a sprite");
   assert.equal(rows[0].answer, "export as PNG, no upscaling");
   assert.equal(rows[0].author_id, null, "a draft has no human author");
+});
+
+test("draftGaps carries program ownership and refuses approval for an unowned draft", async () => {
+  db.handle().query("DELETE FROM doc_gaps").run();
+  db.handle().query("DELETE FROM learned_facts").run();
+  db.recordGap("owned report question", "U1", "C-owned", "owned-gap", "report-owned");
+  db.handle().query("UPDATE doc_gaps SET kind = ? WHERE message_ts = ?").run(report.DOCS, "owned-gap");
+
+  await withJudge("owned report answer", async () => {
+    assert.equal(await report.draftGaps(null, { limit: 5, spacingMs: 0, programId: "report-owned" }), 1);
+  });
+
+  const [owned] = learn.pending(10, "report-owned");
+  assert.equal(owned.program_id, "report-owned");
+  assert.equal(learn.approve(owned.id), true);
+
+  db.recordGap("unowned report question", "U1", "C-unowned", "unowned-gap");
+  db.handle().query("UPDATE doc_gaps SET kind = ? WHERE message_ts = ?").run(report.DOCS, "unowned-gap");
+  await withJudge("unowned report answer", async () => {
+    assert.equal(await report.draftGaps(null, { limit: 5, spacingMs: 0 }), 1);
+  });
+  const unowned = learn
+    .pending(10)
+    .find((row: { question: string; program_id: string | null }) => row.question === "unowned report question");
+  assert.equal(unowned.program_id, null);
+  assert.equal(learn.approve(unowned.id), false);
 });
 
 test("draftGaps does not re-draft a gap already queued for review", async () => {
@@ -315,7 +360,7 @@ test("draftGaps is a no-op with no DOCS gaps", async () => {
 test("an approved draft lands in the corpus like any other learned fact", async () => {
   db.handle().query("DELETE FROM doc_gaps").run();
   db.handle().query("DELETE FROM learned_facts").run();
-  seedGap("how do i unlock the next region", report.DOCS);
+  seedGap("how do i unlock the next region", report.DOCS, 0, "report-approval");
 
   await withJudge("finish your current region's ship requirement, then it opens automatically", async () => {
     assert.equal(await report.draftGaps(null, { limit: 5, spacingMs: 0 }), 1);
@@ -323,11 +368,11 @@ test("an approved draft lands in the corpus like any other learned fact", async 
 
   const [row] = learn.pending(10);
   assert.equal(learn.approve(row.id), true);
-  assert.match(learn.corpusSection(), /unlock the next region/);
+  assert.match(learn.corpusSection("report-approval"), /unlock the next region/);
 });
 
-function seedGap(question: string, kind: string, agoMs = 0) {
-  db.recordGap(question, "U1", "C1");
+function seedGap(question: string, kind: string, agoMs = 0, programId: string | null = null) {
+  db.recordGap(question, "U1", "C1", null, programId);
   const id = db.handle().query("SELECT MAX(id) AS id FROM doc_gaps").get().id;
   db.handle()
     .query("UPDATE doc_gaps SET kind = ?, created_at = ? WHERE id = ?")

@@ -15,6 +15,7 @@ import type { Program, SlackClient } from "./types";
 interface GapSummary {
   id: number;
   question: string;
+  program_id: string | null;
   ask_count: number;
 }
 interface MetricRow {
@@ -46,6 +47,16 @@ function programName() {
     if (progs.length === 1 && progs[0].name) return progs[0].name;
   } catch (e) {}
   return "the configured program";
+}
+
+function scopedProgramName(programId: string | null = null) {
+  if (programId) {
+    try {
+      const program = require("./programs").get(programId);
+      if (program?.name) return program.name;
+    } catch (_error) {}
+  }
+  return programName();
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -178,8 +189,9 @@ const THREAD_REFS_PER_GAP = 2;
 const THREAD_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 const THREAD_CONTEXT_CHAR_CAP = 4000;
 
-function draftPrompt(corpus: string): string {
-  const program = programName();
+function draftPrompt(corpus: string, programId: string | null = null): string {
+  const program = scopedProgramName(programId);
+  const programRef = programId ? require("./programs").get(programId) : null;
 
   return [
     `Someone asked this in the Slack help channel for ${program}, a Hack Club program where teenagers build and ship projects.`,
@@ -191,7 +203,7 @@ function draftPrompt(corpus: string): string {
     "git, coding, tools). Direct and factual, the way a FAQ entry reads. Write only the answer itself: no",
     'restated question, no "Q:"/"A:" labels, no mention that this is a draft or where it came from.',
     "",
-    answer.programGuardrail(null),
+    answer.programGuardrail(programRef),
     "",
     "If none of the above actually answers it, reply with EXACTLY: UNKNOWN. A missing draft costs nothing — a",
     "maintainer writes it instead. A confident, invented answer in the review queue costs someone's trust.",
@@ -201,7 +213,12 @@ function draftPrompt(corpus: string): string {
   ].join("\n");
 }
 
-async function draftDoc(question: string, corpus = "", threadContext = ""): Promise<string | null> {
+async function draftDoc(
+  question: string,
+  corpus = "",
+  threadContext = "",
+  programId: string | null = null,
+): Promise<string | null> {
   try {
     const userContent = threadContext ? `${question}\n\n=== SLACK THREAD(S) ===\n${threadContext}` : question;
     const { text } = await llm.complete(
@@ -215,7 +232,7 @@ async function draftDoc(question: string, corpus = "", threadContext = ""): Prom
         temperature: 0.2,
         timeout: DRAFT_TIMEOUT_MS,
         messages: [
-          { role: "system", content: draftPrompt(corpus) },
+          { role: "system", content: draftPrompt(corpus, programId) },
           { role: "user", content: userContent },
         ],
       },
@@ -235,10 +252,14 @@ function draftSourceTs(gapId: number): string {
   return `${DRAFT_SOURCE_PREFIX}${gapId}`;
 }
 
-async function gatherThreadContext(client: SlackClient | null, question: string): Promise<string> {
+async function gatherThreadContext(
+  client: SlackClient | null,
+  question: string,
+  programId: string | null | undefined = undefined,
+): Promise<string> {
   if (!client) return "";
 
-  const refs = db.gapThreads(question, THREAD_REFS_PER_GAP, THREAD_LOOKBACK_MS);
+  const refs = db.gapThreads(question, THREAD_REFS_PER_GAP, THREAD_LOOKBACK_MS, programId);
   const transcripts: string[] = [];
   for (const ref of refs) {
     try {
@@ -263,25 +284,27 @@ async function draftGaps(
     limit = DRAFT_PER_PASS,
     spacingMs = JUDGE_SPACING_MS,
     sinceMs = WEEK_MS,
-  }: { limit?: number; spacingMs?: number; sinceMs?: number } = {},
+    programId,
+  }: { limit?: number; spacingMs?: number; sinceMs?: number; programId?: string | null } = {},
 ): Promise<number> {
   const candidates = db
-    .topGaps(GAP_LIMIT, sinceMs, { kind: DOCS, minAskers: 1 })
+    .topGaps(GAP_LIMIT, sinceMs, { kind: DOCS, minAskers: 1, programId: programId || null })
     .filter((gap: GapSummary) => !db.hasCapturedSource(draftSourceTs(gap.id)))
     .slice(0, limit);
   if (candidates.length === 0) return 0;
 
   let drafted = 0;
   for (const gap of candidates) {
-    const corpus = knowledge.getContext(gap.question);
-    const threadContext = await gatherThreadContext(client, gap.question);
-    const draftedAnswer = await draftDoc(gap.question, corpus, threadContext);
+    const corpus = knowledge.getContext(gap.question, gap.program_id);
+    const threadContext = await gatherThreadContext(client, gap.question, gap.program_id);
+    const draftedAnswer = await draftDoc(gap.question, corpus, threadContext, gap.program_id);
     if (draftedAnswer) {
       const id = db.addLearnedFact({
         question: gap.question,
         answer: draftedAnswer,
         status: learn.PENDING,
         sourceTs: draftSourceTs(gap.id),
+        programId: gap.program_id,
       });
       if (id) {
         drafted += 1;
