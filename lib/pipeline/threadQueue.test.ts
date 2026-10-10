@@ -82,3 +82,20 @@ function deferred<T = void>() {
 }
 
 export {};
+
+test("a stuck turn times out so the next turn in the thread still runs", async () => {
+  const queue = new ThreadQueue({ turnTimeoutMs: 30 });
+  const order: string[] = [];
+  const first = queue.enqueue("t", () => new Promise<string>(() => {}), "fallback");
+  const second = queue.enqueue(
+    "t",
+    async () => {
+      order.push("second");
+      return "ok";
+    },
+    "fallback",
+  );
+  assert.equal(await first, "fallback");
+  assert.equal(await second, "ok");
+  assert.deepEqual(order, ["second"]);
+});

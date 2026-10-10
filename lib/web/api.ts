@@ -701,8 +701,12 @@ function healthCheck(): ApiResponse {
     dbPath: process.env.PIXIE_DB_PATH || "default (pixie.db)",
   };
 }
+// No inline source text in the fleet list
 function programsList() {
-  return programs.all();
+  return programs.all().map((program) => ({
+    ...program,
+    sources: (program.sources || []).map(({ content: _content, ...source }) => source),
+  }));
 }
 
 function programSave(prog: ProgramSaveBody): ApiResponse {

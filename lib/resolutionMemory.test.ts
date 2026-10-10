@@ -226,3 +226,21 @@ test("an unowned quarantined candidate stays reachable in the legacy review queu
   const ids = raw.listLearnedFacts("pending", 100, null).map((row: { id: number }) => row.id);
   assert.ok(ids.includes(id));
 });
+
+test("an organizer can retire an approved fact and it leaves trusted retrieval", () => {
+  const raw = db as unknown as Record<string, (...args: unknown[]) => any>;
+  const id = raw.addLearnedFact({
+    question: "rq",
+    answer: "ra",
+    status: "candidate",
+    sourceTs: "rt-1",
+    programId: "retire-p",
+  });
+  assert.equal((memory as any).approveCandidate({ id, actorId: "U1" }).ok, true);
+  assert.ok(raw.approvedFacts(50, "retire-p").some((row: { question: string }) => row.question === "rq"));
+  assert.equal((memory as any).rejectCandidate({ id, actorId: "U1" }).ok, true);
+  assert.equal(
+    raw.approvedFacts(50, "retire-p").some((row: { question: string }) => row.question === "rq"),
+    false,
+  );
+});

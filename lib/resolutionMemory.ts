@@ -187,8 +187,8 @@ function approveCandidate({
 function rejectCandidate({ id, actorId }: { id: number; actorId: string | null }): Record<string, unknown> {
   const row = db.getLearnedFactById(id);
   if (!row) return { error: "candidate not found" };
-  if (row.status !== CANDIDATE && row.status !== "pending" && !(row.status === "approved" && row.auto_learned)) {
-    return { error: "only candidates can be rejected here" };
+  if (row.status !== CANDIDATE && row.status !== "pending" && row.status !== "approved") {
+    return { error: "only live knowledge can be rejected here" };
   }
   if (!db.setLearnedStatus(id, REJECTED)) return { error: "rejection failed" };
   require("./learn").invalidateCorpus();

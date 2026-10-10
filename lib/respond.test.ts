@@ -3010,3 +3010,34 @@ test("active incidents bypass cache and model work, stay tenant-scoped, and stop
   }
 });
 export {};
+
+test("a link fetch failing after the placeholder appears deletes it and stops the spinner", async () => {
+  const client = fakeClient();
+  const originalIntent = intent.classifyIntent;
+  const originalFetch = link.fetchUrlContent;
+  intent.classifyIntent = async () => intent.HELP_NEEDED;
+  link.fetchUrlContent = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    throw new Error("fetch exploded");
+  };
+  try {
+    await assert.doesNotReject(() =>
+      respond.respond({
+        client,
+        channel: "C1",
+        threadTs: "t-link-fail",
+        userId: "U-link-fail",
+        question: "pixie, what does https://example.com/page say about export?",
+        mode: respond.ALWAYS,
+      }),
+    );
+    assert.ok(client.calls.posts.includes(reply.THINKING), "the placeholder was posted");
+    assert.equal(client.calls.deletes, 1, "the placeholder was deleted");
+    const updates = client.calls.updates.length;
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(client.calls.updates.length, updates, "no spinner updates after the failed turn");
+  } finally {
+    intent.classifyIntent = originalIntent;
+    link.fetchUrlContent = originalFetch;
+  }
+});

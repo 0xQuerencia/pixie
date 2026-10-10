@@ -1,4 +1,5 @@
 const DEFAULT_MAX_PENDING = 32;
+const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 
 type Work<T> = () => T | Promise<T>;
 
@@ -28,11 +29,17 @@ function threadKey({ workspaceId = null, channel, threadTs, programId = null }: 
 class ThreadQueue {
   private readonly maxPending: number;
 
+  private readonly turnTimeoutMs: number;
+
   private readonly lanes = new Map<string, Lane>();
 
-  constructor({ maxPending = DEFAULT_MAX_PENDING }: { maxPending?: number } = {}) {
+  constructor({
+    maxPending = DEFAULT_MAX_PENDING,
+    turnTimeoutMs = DEFAULT_TURN_TIMEOUT_MS,
+  }: { maxPending?: number; turnTimeoutMs?: number } = {}) {
     if (!Number.isInteger(maxPending) || maxPending < 1) throw new Error("maxPending must be a positive integer");
     this.maxPending = maxPending;
+    this.turnTimeoutMs = turnTimeoutMs;
   }
 
   enqueue<T>(key: string, work: Work<T>, fallback: T): Promise<T> {
@@ -67,14 +74,19 @@ class ThreadQueue {
     }
 
     lane.running = true;
-    next
-      .run()
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // A stuck turn must not wedge its thread
+    const timeout = new Promise<unknown>((resolve) => {
+      timer = setTimeout(() => resolve(next.fallback), this.turnTimeoutMs);
+    });
+    Promise.race([next.run(), timeout])
       .then(next.resolve, next.reject)
       .finally(() => {
+        clearTimeout(timer);
         lane.running = false;
         this.drain(key, lane);
       });
   }
 }
 
-export = { ThreadQueue, threadKey, DEFAULT_MAX_PENDING };
+export = { ThreadQueue, threadKey, DEFAULT_MAX_PENDING, DEFAULT_TURN_TIMEOUT_MS };
