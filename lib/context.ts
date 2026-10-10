@@ -343,13 +343,15 @@ function deriveTopic(question: string) {
   return topic || (question || "").slice(0, 40).trim();
 }
 
-function updateUserHistory(userId: string, question: string, wasHelpful = true) {
+function updateUserHistory(userId: string, question: string, wasHelpful = true, programId: string | null = null) {
   const topic = deriveTopic(question);
-  if (topic) db.recordTopic(userId, topic, wasHelpful);
+  if (topic) db.recordUserTopic(userId, topic, wasHelpful, programId);
 }
 
-function getUserContext(userId: string) {
-  const rows = db.getTopics(userId);
+// Topics never cross programs
+function getUserContext(userId: string, programId: string | null = null) {
+  if (!programId) return null;
+  const rows = db.userTopics(userId, programId);
   if (rows.length === 0) return null;
   return {
     recentTopics: rows.map((r: TopicRow) => r.topic),

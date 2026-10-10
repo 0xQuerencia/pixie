@@ -253,8 +253,8 @@ function uniqueValues(rows: MemoryRow[]): string[] {
   return [...new Set(rows.map((row) => row.value).filter(Boolean))];
 }
 
-function formatAttemptedSteps(programId: string, userId: string): string {
-  const rows = recall(programId, userId).filter(
+function formatAttemptedSteps(programId: string, userId: string, options: { maxAgeDays?: number } = {}): string {
+  const rows = recall(programId, userId, options).filter(
     (row) => row.kind === "problem" || row.kind === "attempt" || row.kind === "environment",
   );
   if (!rows.length) return "";

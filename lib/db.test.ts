@@ -587,3 +587,24 @@ test("channel-less legacy facts go to whatever the resolver names for them", () 
   );
 });
 export {};
+
+test("sweep deletes expired support memory and traces but keeps live rows", () => {
+  const supportMemory = require("./supportMemory");
+  const traceStore = require("./pipeline/traceStore");
+  supportMemory.remember({ programId: "sweep-p", userId: "U1", kind: "problem", value: "live row", ttlMs: 60_000 });
+  supportMemory.remember({ programId: "sweep-p", userId: "U1", kind: "attempt", value: "expired row", ttlMs: 60_000 });
+  db.handle()
+    .query("UPDATE support_memory SET expires_at = ? WHERE value = ?")
+    .run(Date.now() - 1000, "expired row");
+  traceStore.append({ programId: "sweep-p", threadTs: "sweep-t", stage: "decision", payload: { action: "reply" } });
+  db.handle()
+    .query("UPDATE answer_traces SET expires_at = ? WHERE program_id = ?")
+    .run(Date.now() - 1000, "sweep-p");
+  db.sweep();
+  const memoryRows = db.handle().query("SELECT value FROM support_memory WHERE program_id = 'sweep-p'").all();
+  assert.deepEqual(
+    memoryRows.map((row: { value: string }) => row.value),
+    ["live row"],
+  );
+  assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM answer_traces WHERE program_id = 'sweep-p'").get().n, 0);
+});

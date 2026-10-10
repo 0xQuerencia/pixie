@@ -14,6 +14,7 @@ const engagement = require("./pipeline/engagement");
 const messagePolicy = require("./pipeline/messagePolicy");
 const pipelineEvents = require("./pipeline/events");
 const supportMemory = require("./supportMemory");
+const retention = require("./retention");
 const traceStore = require("./pipeline/traceStore");
 const { ThreadQueue, threadKey } = require("./pipeline/threadQueue");
 const knowledge = require("./knowledge");
@@ -44,6 +45,7 @@ interface CacheReplyArgs {
   result: AnswerResult;
   startedAt: number;
   program?: ProgramLike | null;
+  workspaceId?: string | null;
 }
 interface TextPostArgs {
   client: SlackClient;
@@ -193,10 +195,8 @@ function buildChatContext(
   userId: string | null = null,
 ) {
   const parts = [buildContextPrompt(threadContext)];
-  if (programId && userId) {
-    const memory = supportMemory.formatForPrompt(programId, userId);
-    if (memory) parts.push(memory);
-  }
+  void programId;
+  void userId;
   if (!isRecallQuestion(question)) return parts.join("");
 
   const topics = userContext?.recentTopics || [];
@@ -215,6 +215,23 @@ function buildChatContext(
   return parts.join("");
 }
 
+function contextDaysFor(programId: string, prog: ProgramLike | null) {
+  const configured = Number((prog as { retention?: { contextDays?: number } } | null)?.retention?.contextDays);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  try {
+    return retention.policyFor(programId).contextDays;
+  } catch (error: unknown) {
+    log.debug("respond", `support memory retention lookup failed: ${errorMessage(error)}`);
+    return retention.DEFAULTS.contextDays;
+  }
+}
+
+// Context only, never evidence
+function buildAnswerOnlyContext(programId: string | null, userId: string, prog: ProgramLike | null) {
+  if (!programId || !userId) return "";
+  return supportMemory.formatAttemptedSteps(programId, userId, { maxAgeDays: contextDaysFor(programId, prog) });
+}
+
 async function replyFromCache({
   client,
   channel,
@@ -224,6 +241,7 @@ async function replyFromCache({
   result,
   startedAt,
   program = null,
+  workspaceId = null,
 }: CacheReplyArgs) {
   const requireGrounded = process.env.PIXIE_REQUIRE_GROUNDED_ANSWER === "1" || program?.requireGroundedAnswer;
   if (!result.verification?.sendable) return false;
@@ -253,7 +271,7 @@ async function replyFromCache({
 
   await reply.seedFeedbackReactions(client, channel, postedTs);
   context.addToThread(threadTs, "assistant", result.answer, null, channel);
-  context.updateUserHistory(userId, question, true);
+  context.updateUserHistory(userId, question, true, program?.id || null);
   db.recordMetric("answer_docs", Date.now() - startedAt, null, cacheProgramId);
   return true;
 }
@@ -396,7 +414,7 @@ function recordSpokenReply({
   metric?: string;
 }) {
   context.addToThread(threadTs, "assistant", text, null, channel);
-  context.updateUserHistory(userId, question, grounded);
+  context.updateUserHistory(userId, question, grounded, programId || null);
   db.recordMetric(
     metric || (linkContext ? "answer_link" : grounded ? "answer_docs" : "answer_chat"),
     Date.now() - startedAt,
@@ -676,10 +694,9 @@ async function respondTurn({
     await context.seedFromSlack(seedClient, channel, threadTs, config.slack.botUserId, messageTs || threadTs);
   }
 
-  const threadContext = context.getThreadContext(threadTs, trimmed);
+  const threadContext = context.getThreadContext(threadTs, trimmed, channel);
 
   context.addToThread(threadTs, "user", trimmed, userId, channel);
-  context.rememberSupportContext({ programId, userId, question: trimmed, threadTs });
 
   const silencedBefore = isAddressed ? reply.silenceState(threadTs) : null;
 
@@ -691,7 +708,7 @@ async function respondTurn({
   const REFERENTIAL_QUERY = /^(?:\^+|above|see above|this|what about (?:this|that)|answer this|look above)\s*$/i;
   let effectiveQuestion = trimmed;
   if (REFERENTIAL_QUERY.test(trimmed) && threadTs) {
-    const messages = context.getThreadMessages(threadTs);
+    const messages = context.getThreadMessages(threadTs, 8, channel);
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const m = messages[i];
       if (m.speaker === "human" && m.text && !REFERENTIAL_QUERY.test(m.text.trim())) {
@@ -716,7 +733,7 @@ async function respondTurn({
     addressed: isAddressed,
     userId,
     channel,
-    threadMessages: context.getThreadMessages(threadTs),
+    threadMessages: context.getThreadMessages(threadTs, 8, channel),
     recentMessages: await recentChannelContext({ seedClient, channel, messageTs, threadTs }),
   });
   trace.set({
@@ -739,6 +756,7 @@ async function respondTurn({
     return false;
   }
   const kind = plan.kind;
+  if (kind === "program") context.rememberSupportContext({ programId, userId, question: trimmed, threadTs });
 
   const tickets = require("./tickets");
   const requireGrounded = process.env.PIXIE_REQUIRE_GROUNDED_ANSWER === "1" || prog?.requireGroundedAnswer;
@@ -814,9 +832,10 @@ async function respondTurn({
     return isAddressed;
   }
 
+  const answerOnlyContext = kind === "program" ? buildAnswerOnlyContext(programId, userId, prog) : "";
   let contextPrompt =
     isAddressed && kind === "general"
-      ? buildChatContext(threadContext, context.getUserContext(userId), effectiveQuestion, programId, userId)
+      ? buildChatContext(threadContext, context.getUserContext(userId, programId), effectiveQuestion, programId, userId)
       : buildContextPrompt(threadContext);
 
   const known = await lookup.knownAnswer({
@@ -825,6 +844,7 @@ async function respondTurn({
     mode: isAddressed ? ALWAYS : HELP_ONLY,
     program: prog,
     skipCache: requireGrounded,
+    answerOnlyContext,
   });
   if (known && (kind === "general" || isDeterministicAnswer(known) || isGroundedAnswer(known))) {
     const spoke = await replyFromCache({
@@ -951,6 +971,7 @@ async function respondTurn({
         isPing: isAddressed,
         skipCache: requireGrounded,
         kind,
+        answerOnlyContext,
       });
     } catch (error: unknown) {
       if (placeholderTimer) {
@@ -1149,7 +1170,7 @@ async function respondTurn({
         });
         lifecycleCompleted = true;
         context.addToThread(threadTs, "assistant", text, null, channel);
-        context.updateUserHistory(userId, trimmed, false);
+        context.updateUserHistory(userId, trimmed, false, programId);
       } else {
         await reply.discardPlaceholder(client, channel, placeholder());
         lifecycleCompleted = true;
@@ -1182,7 +1203,7 @@ async function respondTurn({
       });
       lifecycleCompleted = true;
       context.addToThread(threadTs, "assistant", text, null, channel);
-      context.updateUserHistory(userId, trimmed, false);
+      context.updateUserHistory(userId, trimmed, false, programId);
       db.recordMetric("fallback", Date.now() - startedAt, "unverified", programId);
       finishTrace("uncertain", plan.reason);
       return true;

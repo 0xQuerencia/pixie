@@ -116,7 +116,7 @@ interface HandlerContext {
   ): Promise<ThreadCrowd>;
   getThreadContext(threadTs: string): string;
   hasSpokenInThread(threadTs: string): boolean;
-  updateUserHistory(userId: string, question: string, answered: boolean): void;
+  updateUserHistory(userId: string, question: string, answered: boolean, programId?: string | null): void;
 }
 interface HandlerRespond {
   ALWAYS: string;
@@ -328,7 +328,7 @@ async function handleImage({ event, client, imageFile, program = null }: ImageAr
         text: replyText.plainDashes(reply),
       });
       context.addToThread(threadTs, "assistant", reply, null, event.channel);
-      context.updateUserHistory(event.user, question || "image analysis", true);
+      context.updateUserHistory(event.user, question || "image analysis", true, program?.id || null);
       db.recordMetric("answer_vision");
     } else {
       db.recordMetric("silent", null, "vision_skip", program?.id || null);

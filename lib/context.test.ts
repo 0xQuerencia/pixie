@@ -91,23 +91,23 @@ test("hasSpokenInThread flips only once pixie replies", () => {
 });
 
 test("user context exposes derived topics, not raw questions", () => {
-  context.updateUserHistory("U7", "how do i unlock the next region?", true);
-  const userContext = context.getUserContext("U7");
+  context.updateUserHistory("U7", "how do i unlock the next region?", true, "prog-a");
+  const userContext = context.getUserContext("U7", "prog-a");
 
   assert.deepEqual(userContext.recentTopics, ["unlock next region"]);
   assert.deepEqual(userContext.helpfulAnswers, ["unlock next region"]);
 });
 
 test("unhelpful answers are tracked as topics but not as helpful ones", () => {
-  context.updateUserHistory("U8", "what is the airspeed of a swallow", false);
-  const userContext = context.getUserContext("U8");
+  context.updateUserHistory("U8", "what is the airspeed of a swallow", false, "prog-a");
+  const userContext = context.getUserContext("U8", "prog-a");
 
   assert.equal(userContext.recentTopics.length, 1);
   assert.deepEqual(userContext.helpfulAnswers, []);
 });
 
 test("getUserContext returns null for an unseen user", () => {
-  assert.equal(context.getUserContext("U-nobody"), null);
+  assert.equal(context.getUserContext("U-nobody", "prog-a"), null);
 });
 
 test("threads are isolated by ts", () => {
@@ -324,3 +324,10 @@ test("seedFromSlack re-seeds a thread whose in-memory transcript was lost", asyn
   assert.equal(calls, 1, "a thread with a live transcript is not fetched twice");
 });
 export {};
+
+test("user topics never cross programs", () => {
+  context.updateUserHistory("U-cross", "alpha confidential deadline", true, "prog-a");
+  assert.equal(context.getUserContext("U-cross", "prog-b"), null);
+  assert.equal(context.getUserContext("U-cross"), null);
+  assert.deepEqual(context.getUserContext("U-cross", "prog-a")?.recentTopics.length, 1);
+});

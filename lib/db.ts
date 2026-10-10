@@ -1207,6 +1207,20 @@ function recordRequest(userId: string) {
   query("INSERT INTO rate_limits (user_id, created_at) VALUES (?, ?)").run(userId, now());
 }
 
+// Expired memory and trace rows
+function sweepExpiredStores() {
+  for (const [name, load] of [
+    ["support memory", () => require("./supportMemory")],
+    ["traces", () => require("./pipeline/traceStore")],
+  ] as const) {
+    try {
+      load().sweepExpired();
+    } catch (error: unknown) {
+      log.debug("db", `${name} sweep skipped: ${errorMessage(error)}`);
+    }
+  }
+}
+
 function sweep() {
   const t = now();
   query("DELETE FROM answered_messages WHERE answered_at < ?").run(t - ANSWERED_TTL_MS);
@@ -1216,6 +1230,7 @@ function sweep() {
   query("DELETE FROM user_messages WHERE created_at < ?").run(t - USER_MESSAGE_TTL_MS);
   query("DELETE FROM answer_cache WHERE COALESCE(last_asked_at, created_at) < ?").run(t - CACHE_IDLE_MS);
   query("DELETE FROM rate_limits WHERE created_at < ?").run(t - 60 * 60 * 1000);
+  sweepExpiredStores();
 
   try {
     handle().exec("PRAGMA wal_checkpoint(TRUNCATE)");
