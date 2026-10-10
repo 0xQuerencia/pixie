@@ -416,4 +416,48 @@ test("POST /internal/v1/programs/:id/incidents/manual creates only for a program
     else process.env.PIXIE_INTERNAL_TOKEN = saved;
   }
 });
+
+test("legacy ticket detail requires a program scope even with the shared bearer", async () => {
+  const saved = process.env.PIXIE_INTERNAL_TOKEN;
+  process.env.PIXIE_INTERNAL_TOKEN = "legacy-detail-token";
+  const serve = require("./serve");
+  const api = require("./api");
+  const H = withToken("legacy-detail-token");
+  try {
+    api.internalProgramSync("legacy-detail", {
+      name: "Legacy detail",
+      workspaceId: "TW-LD",
+      claimedBy: "U-legacy-owner",
+      programChannels: [],
+    });
+    const tid = db.createTicket({
+      programId: "legacy-detail",
+      workspaceId: "TW-LD",
+      channel: "C-LD",
+      threadTs: "legacy-detail-thread",
+      requesterId: "U-legacy-requester",
+      question: "legacy question",
+    });
+
+    const missing = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/tickets/${tid}`, { headers: H }),
+    );
+    assert.equal(missing.status, 400);
+    assert.match((await missing.json()).error, /programId required/);
+
+    const wrong = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/tickets/${tid}?programId=other-program`, { headers: H }),
+    );
+    assert.equal(wrong.status, 403);
+
+    const valid = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/tickets/${tid}?programId=legacy-detail`, { headers: H }),
+    );
+    assert.equal(valid.status, 200);
+    assert.equal((await valid.json()).ticket.program_id, "legacy-detail");
+  } finally {
+    if (saved === undefined) delete process.env.PIXIE_INTERNAL_TOKEN;
+    else process.env.PIXIE_INTERNAL_TOKEN = saved;
+  }
+});
 export {};

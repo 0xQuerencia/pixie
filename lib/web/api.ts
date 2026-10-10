@@ -869,9 +869,10 @@ function ticketTenantError(ticket: Ticket, body: TicketActionBody = {}): string 
   return null;
 }
 
-function ticketDetail(id: number): ApiResponse | null {
+function ticketDetail(id: number, programId?: string | null): ApiResponse | null {
   const ticket = db.getTicket(id);
   if (!ticket) return null;
+  if (programId !== undefined && programId !== ticket.program_id) return { error: "program mismatch" };
   const resolutionSummary = ticket.resolution_summary || null;
   return {
     ticket: { ...ticket, resolutionSummary },

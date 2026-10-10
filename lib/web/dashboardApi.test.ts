@@ -23,6 +23,7 @@ const { test, before } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
 const programs = require("../programs");
+const traceStore = require("../pipeline/traceStore");
 const dash = require("./dashboardApi");
 
 before(() => {
@@ -148,6 +149,56 @@ test("scoped detail returns the thread and 404s cross-program", () => {
   assert.equal(dash.ticketDetailScoped("dash-detail-b", id).error, "ticket not found");
   assert.equal(dash.ticketDetailScoped("dash-detail-a", 999999).error, "ticket not found");
   assert.equal(dash.ticketDetailScoped("no-such-program", id).error, "unknown program");
+});
+
+test("scoped detail includes ticket and thread-only history without crossing programs", () => {
+  seedProgram("dash-trace-a");
+  seedProgram("dash-trace-b");
+  const { id } = seedTicket("dash-trace-a", {});
+  const ticket = db.getTicket(id);
+  const ticketTrace = traceStore.append({
+    programId: "dash-trace-a",
+    ticketId: id,
+    threadTs: ticket.thread_ts,
+    stage: "decision",
+    payload: { expectedAction: "reply" },
+  });
+  const threadTrace = traceStore.append({
+    programId: "dash-trace-a",
+    threadTs: ticket.thread_ts,
+    stage: "retrieval",
+    payload: { sources: [] },
+  });
+  traceStore.append({
+    programId: "dash-trace-b",
+    threadTs: ticket.thread_ts,
+    stage: "decision",
+    payload: { expectedAction: "leak" },
+  });
+
+  const detail = dash.ticketDetailScoped("dash-trace-a", id);
+  assert.equal(detail.tracesError, undefined);
+  assert.deepEqual(
+    detail.traces.map((row: { id: number }) => row.id),
+    [threadTrace, ticketTrace].sort((a, b) => a - b),
+  );
+  assert.equal(JSON.stringify(detail.traces).includes("leak"), false);
+});
+
+test("scoped detail reports trace read failures instead of returning a false empty history", () => {
+  seedProgram("dash-trace-error");
+  const { id } = seedTicket("dash-trace-error", {});
+  const original = traceStore.forTicket;
+  traceStore.forTicket = () => {
+    throw new Error("trace store unavailable");
+  };
+  try {
+    const detail = dash.ticketDetailScoped("dash-trace-error", id);
+    assert.equal(detail.tracesError, true);
+    assert.deepEqual(detail.traces, []);
+  } finally {
+    traceStore.forTicket = original;
+  }
 });
 
 test("metrics overview counts ops figures from stored rows only", () => {

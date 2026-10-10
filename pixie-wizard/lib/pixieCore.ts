@@ -241,9 +241,7 @@ export async function coreSlackChannels(): Promise<{ ok: boolean; channels: Core
   return body as { ok: boolean; channels: CoreChannel[]; reason?: string };
 }
 
-export async function coreChannelMembership(
-  channelId: string,
-): Promise<{
+export async function coreChannelMembership(channelId: string): Promise<{
   ok: boolean;
   hasAccess: boolean;
   name?: string | null;
@@ -611,6 +609,17 @@ export interface DashboardTicketRow {
   created_at: number;
   updated_at: number;
   resolved_at: number | null;
+}
+
+export type CoreTracePayload = Record<string, unknown>;
+
+export interface CoreTraceRow {
+  id: number;
+  ticketId?: number | null;
+  stage: string;
+  payload: CoreTracePayload;
+  createdAt: number;
+  requestId: string | null;
 }
 
 export async function coreDashboardTicketSearch(

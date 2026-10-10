@@ -94,6 +94,8 @@ function countFor(h: DatabaseHandle, sql: string, ...params: SQLQueryBindings[])
 function preview(programId: string, now = Date.now()) {
   const p = policyFor(programId);
   const h = db.handle();
+  const traceStore = require("./pipeline/traceStore");
+  traceStore.ensureSchema();
   const ticketCutoff = now - p.ticketsDays * DAY_MS;
   const ids = eligibleTicketIds(h, programId, ticketCutoff);
   let events = 0;
@@ -129,9 +131,9 @@ function preview(programId: string, now = Date.now()) {
     ).n,
     answerTraces: countFor(
       h,
-      "SELECT COUNT(*) AS n FROM answer_traces WHERE program_id = ? AND created_at < ?",
+      "SELECT COUNT(*) AS n FROM answer_traces WHERE program_id = ? AND expires_at <= ?",
       programId,
-      now - p.tracesDays * DAY_MS,
+      now,
     ).n,
     auditEligible: 0,
   };
@@ -150,6 +152,7 @@ function sweepProgram(programId: string, { dryRun = true, now = Date.now() }: { 
   if (dryRun) return { ...result, deleted: false };
   const p = result.policy;
   const h = db.handle();
+  const traceStore = require("./pipeline/traceStore");
   const ids = eligibleTicketIds(h, programId, now - p.ticketsDays * DAY_MS);
   h.transaction(() => {
     deleteTicketScope(h, ids);
@@ -162,10 +165,7 @@ function sweepProgram(programId: string, { dryRun = true, now = Date.now() }: { 
       programId,
       now - p.contextDays * DAY_MS,
     );
-    h.query("DELETE FROM answer_traces WHERE program_id = ? AND created_at < ?").run(
-      programId,
-      now - p.tracesDays * DAY_MS,
-    );
+    traceStore.sweepExpired(programId, now);
     h.query("DELETE FROM sla_notifications WHERE program_id = ? AND sent_at < ?").run(
       programId,
       now - p.analyticsDays * DAY_MS,
