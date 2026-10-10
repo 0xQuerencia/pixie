@@ -40,6 +40,7 @@ interface AnswerOptions {
   isPing?: boolean;
   skipCache?: boolean;
   kind?: "program" | "general";
+  answerOnlyContext?: string;
 }
 interface WebResult {
   title?: string;
@@ -576,10 +577,12 @@ async function answerOrChat(
     isPing = false,
     skipCache = false,
     kind = "program",
+    answerOnlyContext = "",
   }: AnswerOptions = {},
 ) {
   const programId = idOf(prog);
-  const hit = await verifiedCacheHit(question, contextPrompt, prog, skipCache);
+  const hasAnswerOnlyContext = Boolean(answerOnlyContext && answerOnlyContext.trim());
+  const hit = await verifiedCacheHit(question, contextPrompt, prog, skipCache || hasAnswerOnlyContext);
   if (hit) return hit;
 
   const staged = await runCodeStages(question);
@@ -597,11 +600,15 @@ async function answerOrChat(
     ? await answer.getAnswerOrChatStream(question, corpus, contextPrompt, {
         onText,
         inHelpChannel,
-        program: prog,
-        channel,
+          program: prog,
+          channel,
+          isPing,
+          answerOnlyContext,
+        })
+    : await answer.getAnswerOrChat(question, corpus, contextPrompt, inHelpChannel, prog, channel, {
         isPing,
-      })
-    : await answer.getAnswerOrChat(question, corpus, contextPrompt, inHelpChannel, prog, channel, { isPing });
+        answerOnlyContext,
+      });
 
   if (!result?.source) {
     const direct = dateFallback(question, contextPrompt, prog);
@@ -618,13 +625,14 @@ async function answerOrChat(
           isPing,
           inHelpChannel,
           allowWebSearch,
+          answerOnlyContext,
         })) || result;
   }
 
   result = await applyGroundingBoundaryAsync(result, prog, question, corpus, details.evidence, {
     allowUngroundedChat: kind === "general",
   });
-  if (result?.source && !contextPrompt && !skipCache && result.verification?.sendable)
+  if (result?.source && !contextPrompt && !skipCache && !hasAnswerOnlyContext && result.verification?.sendable)
     cache.put(question, result, cacheScope(prog));
   return result;
 }
@@ -638,6 +646,7 @@ async function webFallback({
   isPing,
   inHelpChannel,
   allowWebSearch,
+  answerOnlyContext,
 }: {
   question: string;
   contextPrompt: string;
@@ -647,6 +656,7 @@ async function webFallback({
   isPing: boolean;
   inHelpChannel: boolean;
   allowWebSearch: boolean;
+  answerOnlyContext: string;
 }) {
   if (!allowWebSearch) return null;
   const webResults = await firecrawl.searchWeb(question).catch(() => null);
@@ -654,7 +664,11 @@ async function webFallback({
   const webSnippet = webResults.map((r: WebResult) => `Title: ${r.title}\nURL: ${r.url}\n${r.markdown}`).join("\n\n");
   const webContextPrompt = `${contextPrompt}\n\n=== WEB RESEARCH ===\n${webSnippet}`;
   return answer
-    .getGroundedAnswer(question, corpus, webContextPrompt, prog, channel, { isPing, inHelpChannel })
+    .getGroundedAnswer(question, corpus, webContextPrompt, prog, channel, {
+      isPing,
+      inHelpChannel,
+      answerOnlyContext,
+    })
     .catch(() => null);
 }
 
@@ -664,6 +678,7 @@ interface KnownAnswerOptions {
   mode: AnswerMode;
   program?: ProgramLike | string | null;
   skipCache?: boolean;
+  answerOnlyContext?: string;
 }
 
 async function knownAnswer({
@@ -672,8 +687,9 @@ async function knownAnswer({
   mode,
   program: prog = null,
   skipCache = false,
+  answerOnlyContext = "",
 }: KnownAnswerOptions) {
-  if (contextPrompt) return null;
+  if (contextPrompt || answerOnlyContext.trim()) return null;
   if (link.extractUrl(question)) return null;
   if (mode === DOCS_ONLY) return null;
   return verifiedCacheHit(question, contextPrompt, prog, skipCache);

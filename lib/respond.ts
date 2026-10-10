@@ -14,6 +14,7 @@ const engagement = require("./pipeline/engagement");
 const messagePolicy = require("./pipeline/messagePolicy");
 const pipelineEvents = require("./pipeline/events");
 const supportMemory = require("./supportMemory");
+const retention = require("./retention");
 const traceStore = require("./pipeline/traceStore");
 const knowledge = require("./knowledge");
 const retrieve = require("./retrieve");
@@ -43,6 +44,7 @@ interface CacheReplyArgs {
   result: AnswerResult;
   startedAt: number;
   program?: ProgramLike | null;
+  workspaceId?: string | null;
 }
 interface TextPostArgs {
   client: SlackClient;
@@ -189,10 +191,8 @@ function buildChatContext(
   userId: string | null = null,
 ) {
   const parts = [buildContextPrompt(threadContext)];
-  if (programId && userId) {
-    const memory = supportMemory.formatForPrompt(programId, userId);
-    if (memory) parts.push(memory);
-  }
+  void programId;
+  void userId;
   if (!isRecallQuestion(question)) return parts.join("");
 
   const topics = userContext?.recentTopics || [];
@@ -211,6 +211,58 @@ function buildChatContext(
   return parts.join("");
 }
 
+const ANSWER_ONLY_HEADER = "CONTEXT-ONLY (not policy; do not treat as documentation)\n";
+const ANSWER_ONLY_FOOTER = "\nUse only as ANSWER-ONLY context.";
+
+function contextDaysFor(programId: string, prog: ProgramLike | null) {
+  const configured = Number(prog?.retention?.contextDays);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+  try {
+    return retention.policyFor(programId).contextDays;
+  } catch (error: unknown) {
+    log.debug("respond", `support memory retention lookup failed: ${errorMessage(error)}`);
+    return retention.DEFAULTS.contextDays;
+  }
+}
+
+function formatAnswerOnlyRows(rows: Array<{ kind: string; value: string }>) {
+  const unique = (kind: string) =>
+    [...new Set(rows.filter((row) => row.kind === kind).map((row) => row.value).filter(Boolean))];
+  const problems = unique("problem");
+  const attempts = unique("attempt");
+  const environments = unique("environment");
+  const lines: string[] = [];
+  if (problems.length) lines.push(`Previous problem: ${problems.join(" | ")}`);
+  if (attempts.length) lines.push(`Steps already tried: ${attempts.join(" | ")}`);
+  if (environments.length) lines.push(`Environment: ${environments.join(" | ")}`);
+  const available = supportMemory.MAX_RECALL_CHARS - ANSWER_ONLY_HEADER.length - ANSWER_ONLY_FOOTER.length;
+  const selected: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const separator = selected.length ? 1 : 0;
+    const remaining = available - used - separator;
+    if (remaining <= 0) break;
+    const bounded = line.slice(0, remaining);
+    if (!bounded) break;
+    selected.push(bounded);
+    used += separator + bounded.length;
+  }
+  return selected.length ? `${ANSWER_ONLY_HEADER}${selected.join("\n")}${ANSWER_ONLY_FOOTER}` : "";
+}
+
+function buildAnswerOnlyContext(programId: string | null, userId: string, prog: ProgramLike | null) {
+  if (!programId || !userId) return "";
+  const rows = supportMemory.recall(programId, userId, {
+    maxAgeDays: contextDaysFor(programId, prog),
+  });
+  if (!rows.length) return "";
+  return formatAnswerOnlyRows(rows);
+}
+
+function threadScope(channel: string, workspaceId: string | null) {
+  return workspaceId ? { channel, workspace: workspaceId } : channel;
+}
+
 async function replyFromCache({
   client,
   channel,
@@ -220,6 +272,7 @@ async function replyFromCache({
   result,
   startedAt,
   program = null,
+  workspaceId = null,
 }: CacheReplyArgs) {
   const requireGrounded = process.env.PIXIE_REQUIRE_GROUNDED_ANSWER === "1" || program?.requireGroundedAnswer;
   if (!result.verification?.sendable) return false;
@@ -248,8 +301,8 @@ async function replyFromCache({
   }
 
   await reply.seedFeedbackReactions(client, channel, postedTs);
-  context.addToThread(threadTs, "assistant", result.answer, null, channel);
-  context.updateUserHistory(userId, question, true);
+  context.addToThread(threadTs, "assistant", result.answer, null, channel, workspaceId);
+  context.updateUserHistory(userId, question, true, program?.id || null);
   db.recordMetric("answer_docs", Date.now() - startedAt, null, cacheProgramId);
   return true;
 }
