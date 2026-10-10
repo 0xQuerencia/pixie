@@ -8,7 +8,7 @@ const log = require("../log");
 const config = require("../config").config;
 const { probe } = require("../probe");
 const retrieve = require("../retrieve");
-const answerVerifier = require("../answerVerifier");
+const claimVerifier = require("../claimVerifier");
 const { coverageStats, relativeTime } = require("../stats");
 import type { Program, ProgramSource, SlackClient, Ticket } from "../types";
 
@@ -1176,33 +1176,19 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
     log.warn("web/api", "test-question lookup failed");
     result = null;
   }
-  let grounded = false;
-  try {
-    grounded = require("../respond").isGroundedAnswer(result);
-  } catch (_) {
-    grounded = false;
+  let grounding = result?.verification || null;
+  if (!grounding) {
+    const evidence = sourceNamesFromContext(context).map((source) => ({
+      id: `${source}#probe`,
+      programId,
+      sourceName: source,
+      text: context,
+      authority: "source",
+      kind: "source",
+    }));
+    grounding = claimVerifier.verifyAnswerSync({ programId, answer: result?.answer || "", evidence });
   }
-
-  let grounding = {
-    sendable: grounded,
-    verdict: grounded ? "supported" : "unsupported",
-    claims: [],
-    unsupported: [],
-    errors: [],
-  };
-  if (result?.groundingVerdict || result?.evidence) {
-    try {
-      grounding = answerVerifier.verify({
-        programId,
-        verdict: result.groundingVerdict,
-        evidence: result.evidence,
-        fixtureClaims: result.fixtureClaims,
-      });
-      grounded = grounded && grounding.sendable;
-    } catch (_) {
-      grounded = false;
-    }
-  }
+  const grounded = grounding.sendable === true;
 
   const decided = testQuestionExpectedAction({
     program,
