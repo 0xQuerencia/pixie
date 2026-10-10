@@ -476,7 +476,13 @@ async function applyGroundingBoundaryAsync(
     return null;
   }
   if (materialClaimCount(result) > 0 && !checked.sendable) {
-    if (allowUngroundedChat && !result.source && !isAuthoritativeOnlyTopic(question, result)) return enriched;
+    if (
+      allowUngroundedChat &&
+      !result.source &&
+      !isAuthoritativeOnlyTopic(question, result) &&
+      !claimVerifier.hasPolicyClaims(result.answer || "")
+    )
+      return enriched;
     return null;
   }
   if (

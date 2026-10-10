@@ -396,3 +396,25 @@ test("an end-date question reaches retrieval and rejects an unconfigured answer 
   }
 });
 export {};
+
+test("general chat cannot assert program policy without evidence", async () => {
+  const program = { id: "program-1", name: "Program 1", sources: [] };
+  const result = await lookup.applyGroundingBoundaryAsync(
+    { source: null, answer: "Refunds are prohibited." },
+    program,
+    "tell me something",
+    "",
+    [],
+    { allowUngroundedChat: true },
+  );
+  assert.equal(result, null);
+  const casual = await lookup.applyGroundingBoundaryAsync(
+    { source: null, answer: "Bake the cookies at 180C for ten minutes." },
+    program,
+    "cookie recipe",
+    "",
+    [],
+    { allowUngroundedChat: true },
+  );
+  assert.ok(casual);
+});

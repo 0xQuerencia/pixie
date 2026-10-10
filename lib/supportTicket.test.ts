@@ -70,7 +70,8 @@ const FLEET = JSON.stringify([
       {
         name: "Docs",
         type: "text",
-        content: "Repositories should be public for review. Support questions can be answered in this channel.",
+        content:
+          "Repositories should be public for review. Support questions can be answered in this channel. Yes, as long as it's public.",
       },
     ],
     links: { docs: "https://example.test/docs" },

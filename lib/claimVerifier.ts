@@ -43,7 +43,8 @@ const ESCALATION_RE =
 const CLARIFICATION_RE =
   /^(?:please\s+)?(?:can|could|would|will|do)\s+(?:you|u)\s+(?:clarify|be more specific|rephrase|explain what)\b/i;
 const NEGATION_RE =
-  /\b(?:not|no|never|cannot|can't|isn't|aren't|don't|doesn't|didn't|shouldn't|mustn't|prohibited|forbidden|banned|disallowed|ineligible|rejected|denied|without)\b/i;
+  /\b(?:not|no|never|cannot|can't|cant|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|won't|wouldn't|shouldn't|mustn't|couldn't|hasn't|haven't|hadn't|unable|nobody|none|nothing|neither|nor|prohibited|forbidden|banned|disallowed|ineligible|rejected|denied|without)\b/gi;
+const CONDITION_RE = /\b(?:unless|except|only if|if|but not|excluding|other than|provided that|as long as|until)\b/gi;
 const NUMBER_WORDS = new Set([
   "zero",
   "one",
@@ -234,10 +235,19 @@ const TOKEN_ALIASES: Record<string, string> = {
   denied: "deny",
   denial: "deny",
 };
+const UNIT_PATTERN = Object.keys(UNIT_ALIASES)
+  .filter((key) => /[a-z]/.test(key))
+  .sort((a, b) => b.length - a.length)
+  .join("|");
+const DIGIT_RE = new RegExp(`(?:[$€£¥]\\s*)?\\d[\\d,]*(?:\\.\\d+)?\\s*[-–]?\\s*(?:%|(?:${UNIT_PATTERN})\\b)?`, "gi");
+const VAGUE_QUANTITY_RE =
+  /\b(?:a couple(?: of)?|a few|several|a handful(?: of)?|dozens?(?: of)?|half|double|triple|twice|thrice|no more than|at least|up to|roughly|approximately|nearly)\b/gi;
+const ROMAN_RE =
+  /\b(?=[IVXLCDM]{2,8}\b)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})\b|\b[VXLCDM](?=\s+(?:dollars?|days?|hours?|weeks?|months?|years?|credits?|points?|percent)\b)/g;
+const ROMAN_VALUES: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+
 const DATE_RE =
   /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b/gi;
-const DIGIT_RE =
-  /(?:[$€£¥]\s*)?\d[\d,.]*(?:\.\d+)?\s*[-–]?\s*(?:%|percent|px|pixels?|ms|milliseconds?|s|seconds?|secs?|m|minutes?|mins?|h|hours?|hrs?|d|days?|weeks?|months?|years?|dollars?|credits?|points?)?/gi;
 const WORD_NUMBER_RE = new RegExp(
   `\\b(?:${[...NUMBER_WORDS].join("|")})(?:[-\\s]+(?:${[...NUMBER_WORDS].join("|")}|and)){0,10}(?:(?:\\s+|-)(?:percent|dollars?|credits?|points?|seconds?|minutes?|hours?|days?|weeks?|months?|years?))?\\b`,
   "gi",
@@ -248,21 +258,56 @@ function textOf(value: unknown) {
 }
 
 function normalizeText(value: unknown) {
-  return textOf(value).toLowerCase().replace(/[’]/g, "'").replace(/\s+/g, " ").trim();
+  return textOf(value).normalize("NFKC").toLowerCase().replace(/[’]/g, "'").replace(/\s+/g, " ").trim();
+}
+
+function stripMarkup(line: string) {
+  return line
+    .replace(/^\s*(?:>+\s*)+/, "")
+    .replace(/^\s*\|?\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)*\s*\|?\s*$/, "")
+    .replace(/\s*\|\s*/g, ". ")
+    .replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "")
+    .replace(/[`*_]{1,3}/g, "")
+    .trim();
 }
 
 function splitSentences(value: unknown): string[] {
   const text = textOf(value);
   if (!text) return [];
-  return (text.match(/[^.!?\n]+(?:[.!?]+|$)/g) || [])
-    .map((sentence) => sentence.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").trim())
-    .filter(Boolean);
+  const sentences: string[] = [];
+  for (const line of text.split(/\n+/)) {
+    if (/^\s*```/.test(line)) continue;
+    const clean = stripMarkup(line);
+    let start = 0;
+    for (let i = 0; i < clean.length; i += 1) {
+      const ch = clean[i];
+      const next = clean[i + 1];
+      if ((ch === "." || ch === "!" || ch === "?") && (next === undefined || /\s/.test(next))) {
+        sentences.push(clean.slice(start, i + 1));
+        start = i + 1;
+      }
+    }
+    sentences.push(clean.slice(start));
+  }
+  return sentences.map((sentence) => sentence.replace(/^[\s.]+/, "").trim()).filter(Boolean);
 }
+
+const PLEASANTRY_RE =
+  /^(?:(?:i )?hope (?:this|that) helps|let me know|feel free|happy to help|glad to help|good luck|here(?:'s| is| are)\b|see (?:below|above)|as follows|great question|no problem|you're welcome|you are welcome|of course|sure|okay|ok|got it)\b/i;
+const IMPERATIVE_RE = /^(?:please\s+)?(?:try|restart|refresh|reload|clear|wait|ask|contact|reach|let)\b/i;
+const POLICY_RE =
+  /\b(?:eligib\w*|allowed|prohibited|forbidden|banned|permission|deadline|due|payout\w*|grants?|refund\w*|reimburs\w*|rules?|limit\w*|caps?|approv\w*|reject\w*|denied|submit\w*|apply|application|required|must|cannot|can't|fees?|costs?|price|free|credits?|points?|dollars?|stipend|prize)\b|[$€£]\s*\d/i;
 
 function isMaterialClaim(sentence: string) {
   const clean = textOf(sentence);
-  if (!clean || ESCALATION_RE.test(clean) || CLARIFICATION_RE.test(clean)) return false;
-  return MATERIAL_RE.test(clean);
+  if (!clean || ESCALATION_RE.test(clean) || CLARIFICATION_RE.test(clean) || /\?\s*$/.test(clean)) return false;
+  if (MATERIAL_RE.test(clean)) return true;
+  if (PLEASANTRY_RE.test(clean) || IMPERATIVE_RE.test(clean)) return false;
+  return contentTokens(clean).length >= 3;
+}
+
+function hasPolicyClaims(answer: string) {
+  return splitSentences(answer).some((sentence) => isMaterialClaim(sentence) && POLICY_RE.test(sentence));
 }
 
 function extractMaterialClaims(answer: string) {
@@ -324,6 +369,18 @@ function numericSignatures(text: string) {
   for (const match of normalizeText(text).matchAll(DATE_RE)) {
     values.add(`date|${match[0].replace(/\s+/g, " ").replace(/\s*,\s*/g, ", ")}`);
   }
+  for (const match of normalizeText(text).matchAll(VAGUE_QUANTITY_RE)) {
+    values.add(`vague|${match[0].replace(/\s+/g, " ")}`);
+  }
+  for (const match of textOf(text).normalize("NFKC").matchAll(ROMAN_RE)) {
+    const roman = match[0];
+    let total = 0;
+    for (let i = 0; i < roman.length; i += 1) {
+      const value = ROMAN_VALUES[roman[i]];
+      total += value < (ROMAN_VALUES[roman[i + 1]] || 0) ? -value : value;
+    }
+    values.add(`${total}|roman`);
+  }
   return values;
 }
 
@@ -351,8 +408,16 @@ function coverage(claim: string, evidence: string) {
   return matched / claimTokens.length;
 }
 
-function negative(value: string) {
-  return NEGATION_RE.test(normalizeText(value));
+function negationParity(value: string) {
+  return (normalizeText(value).match(NEGATION_RE) || []).length % 2;
+}
+
+function conditionKey(value: string) {
+  return [...new Set(normalizeText(value).match(CONDITION_RE) || [])].sort().join("|");
+}
+
+function sameMeaningShape(claim: string, evidence: string) {
+  return negationParity(claim) === negationParity(evidence) && conditionKey(claim) === conditionKey(evidence);
 }
 
 function evidenceId(item: ClaimEvidence) {
@@ -408,11 +473,11 @@ function deterministicClaim(claim: string, evidence: ClaimEvidence[], programId:
       .sort((a, b) => b.score - a.score)[0];
     const hasNumbers = [...claimNumbers].every((token) => numericSignatures(text).has(token));
     const matching = best && best.score >= 0.75 && hasNumbers;
-    if (matching && negative(claim) === negative(best.sentence)) supporting.push(item);
-    if (matching && negative(claim) !== negative(best.sentence)) contradictory.push(item);
+    if (matching && sameMeaningShape(claim, best.sentence)) supporting.push(item);
+    if (matching && negationParity(claim) !== negationParity(best.sentence)) contradictory.push(item);
 
     const hasContradictingSentence = sentences.some(
-      (sentence) => coverage(claim, sentence) >= 0.75 && negative(claim) !== negative(sentence),
+      (sentence) => coverage(claim, sentence) >= 0.75 && negationParity(claim) !== negationParity(sentence),
     );
     if (hasContradictingSentence && !contradictory.includes(item)) contradictory.push(item);
   }
@@ -687,6 +752,7 @@ function verifyAnswerSync(input: VerifyInput): AnswerVerification {
 export = {
   JUDGE_TIMEOUT_MS,
   extractMaterialClaims,
+  hasPolicyClaims,
   numericSignatures,
   verifyAnswer,
   verifyAnswerSync,

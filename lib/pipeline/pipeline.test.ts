@@ -77,7 +77,7 @@ const JEV: Record<string, { action: string; intent: string }> = {
 };
 
 const ACME_DOCS =
-  "Restoration Energy is what you earn by restoring pixels. Acme is a YSWS for pixel art games. Fix the notes and resubmit from your dashboard.";
+  "Restoration Energy is what you earn by restoring pixels. Acme is a YSWS for pixel art games. Fix the notes and resubmit from your dashboard. Restore pixels in the editor to earn it.";
 
 function verifiedAnswer(answer: string | null, source: string | null, programId: string) {
   if (!answer || !source) {

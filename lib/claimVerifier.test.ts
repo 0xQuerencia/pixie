@@ -249,3 +249,70 @@ test("a judge can only downgrade a deterministic support result", async () => {
 });
 
 export {};
+
+function sendable(answer: string, evidenceText: string) {
+  return claimVerifier.verifyAnswerSync({
+    programId: "program-a",
+    answer,
+    evidence: [sourceEvidence(evidenceText)],
+  }).sendable;
+}
+
+test("a bare declarative fact needs evidence even without policy keywords", () => {
+  assert.equal(sendable("The portal is called Nimbus.", "The docs explain submission steps."), false);
+  assert.equal(sendable("The portal is called Nimbus.", "The portal is called Nimbus."), true);
+});
+
+test("markdown tables, quotes and code blocks do not hide an unsupported claim", () => {
+  const answer = [
+    "| Topic | Answer |",
+    "| --- | --- |",
+    "| portal | The portal is called Nimbus. |",
+    "",
+    "```text",
+    "ok",
+    "```",
+  ].join("\n");
+  assert.equal(sendable(answer, "The grant can be returned before activation."), false);
+  assert.equal(sendable("> The portal is called Nimbus.", "The grant can be returned before activation."), false);
+});
+
+test("numbers normalize across width, units, decimals and vague quantities", () => {
+  assert.equal(sendable("The AI limit is ３０％.", "The AI limit is 10%."), false);
+  assert.equal(sendable("The AI limit is ３０％.", "The AI limit is 30%."), true);
+  assert.equal(sendable("The AI limit is 1.5%.", "The AI limit is 1.5%."), true);
+  assert.equal(sendable("The AI limit is 1.5%.", "The AI limit is 15%."), false);
+  assert.equal(
+    sendable("The payout arrives a couple of days after review.", "The payout arrives three days after review."),
+    false,
+  );
+  assert.equal(sendable("The payout is V dollars after review.", "The payout is three dollars after review."), false);
+  assert.equal(sendable("The payout is 50 dollars after review.", "The payout is 50 days after review."), false);
+  assert.equal(sendable("The payout is 50 dollars after review.", "The payout is 50 dollars after review."), true);
+});
+
+test("double negatives and conditional operators cannot flip a rule", () => {
+  assert.equal(sendable("AI is not prohibited for projects.", "AI is prohibited for projects."), false);
+  assert.equal(
+    sendable(
+      "You can submit your project through the portal unless it is private.",
+      "You can submit your project through the portal if it is private.",
+    ),
+    false,
+  );
+  assert.equal(
+    sendable("You can submit your project through the portal.", "You can submit your project through the portal."),
+    true,
+  );
+});
+
+test("pleasantries, questions and generic troubleshooting are not claims", () => {
+  assert.equal(sendable("Hope this helps! Let me know if you need anything else.", "unrelated text"), true);
+  assert.equal(sendable("Try restarting the app and refreshing the page.", "unrelated text"), true);
+  assert.equal(sendable("Which project are you asking about?", "unrelated text"), true);
+});
+
+test("hasPolicyClaims flags policy talk but not casual numbers", () => {
+  assert.equal(claimVerifier.hasPolicyClaims("Refunds are prohibited."), true);
+  assert.equal(claimVerifier.hasPolicyClaims("Bake the cookies at 180C for ten minutes."), false);
+});

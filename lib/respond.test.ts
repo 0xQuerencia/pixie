@@ -46,6 +46,9 @@ const SAFE_SOURCE_TEXT = [
   "You can use the Wokwi simulator for firmware testing.",
   "Check your canvas size and the docs for export guidance.",
   "Tier 2 needs a testbench.",
+  "Export it as a PNG at native size.",
+  "Export as PNG at native size.",
+  "Held answer text.",
 ].join(" ");
 const SHARED_TEST_SOURCES = ["Docs", "Acme Docs", "Acme FAQ"].map((name) => ({
   name,
