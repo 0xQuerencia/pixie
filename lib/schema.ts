@@ -36,10 +36,12 @@ CREATE TABLE IF NOT EXISTS support_memory (
   user_id           TEXT NOT NULL,
   kind              TEXT NOT NULL,
   value             TEXT NOT NULL,
+  normalized_value  TEXT NOT NULL,
   source_thread_ts  TEXT,
   source_ticket_id  INTEGER,
   confidence        REAL NOT NULL DEFAULT 1,
   created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
   expires_at        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_support_memory_scope
@@ -247,6 +249,9 @@ CREATE INDEX IF NOT EXISTS idx_answer_traces_thread
 
 const MIGRATIONS = [
   ["doc_gaps", "message_ts", "ALTER TABLE doc_gaps ADD COLUMN message_ts TEXT"],
+
+  ["support_memory", "normalized_value", "ALTER TABLE support_memory ADD COLUMN normalized_value TEXT"],
+  ["support_memory", "updated_at", "ALTER TABLE support_memory ADD COLUMN updated_at INTEGER"],
 
   ["answer_cache", "ask_count", "ALTER TABLE answer_cache ADD COLUMN ask_count INTEGER NOT NULL DEFAULT 1"],
   ["answer_cache", "last_asked_at", "ALTER TABLE answer_cache ADD COLUMN last_asked_at INTEGER"],
@@ -519,6 +524,20 @@ CREATE INDEX IF NOT EXISTS idx_incident_reports_incident ON incident_reports(inc
 CREATE INDEX IF NOT EXISTS idx_llm_usage_program_time ON llm_usage(program_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_request ON llm_usage(request_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_support_memory_expiry ON support_memory(expires_at);
+UPDATE support_memory
+   SET normalized_value = lower(trim(value))
+ WHERE normalized_value IS NULL OR normalized_value = '';
+UPDATE support_memory
+   SET updated_at = created_at
+ WHERE updated_at IS NULL;
+DELETE FROM support_memory
+ WHERE id NOT IN (
+   SELECT MAX(id)
+     FROM support_memory
+    GROUP BY program_id, user_id, kind, normalized_value
+ );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_support_memory_logical_key
+  ON support_memory(program_id, user_id, kind, normalized_value);
 CREATE INDEX IF NOT EXISTS idx_answer_traces_expiry ON answer_traces(expires_at);
 `;
 

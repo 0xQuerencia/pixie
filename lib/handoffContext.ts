@@ -49,4 +49,8 @@ function build(input: HandoffInput): string {
     .join("\n");
 }
 
-export = { build };
+function formatAttemptedSteps(programId: string, userId: string): string {
+  return supportMemory.formatAttemptedSteps(programId, userId);
+}
+
+export = { build, formatAttemptedSteps };
