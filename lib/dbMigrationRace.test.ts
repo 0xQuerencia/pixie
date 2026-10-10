@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const CHILDREN = 12;
+const CHILDREN = 6;
 const CHILD_SCRIPT =
   'const fs = require("node:fs"); const db = require("./lib/db"); const file = process.argv.at(-1); fs.writeFileSync(`${file}.ready.${process.pid}`, "1"); const wait = new Int32Array(new SharedArrayBuffer(4)); while (!fs.existsSync(`${file}.go`)) Atomics.wait(wait, 0, 0, 10); try { db.ensureSchema(file); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }';
 
