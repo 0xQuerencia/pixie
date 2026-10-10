@@ -13,14 +13,30 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
       - run: bun install --frozen-lockfile
+        name: Install root dependencies
+      - run: bun install --frozen-lockfile
+        name: Install wizard dependencies
+        working-directory: pixie-wizard
       - run: bun run typecheck
+        name: Root typecheck
       - run: bun run format:check
+        name: Root format check
       - run: bun run test
+        name: Root tests
       - run: bun run eval:support
+        name: Support evals
+      - run: bun run typecheck
+        name: Wizard typecheck
+        working-directory: pixie-wizard
+      - run: bun run test:wizard
+        name: Wizard tests
+      - run: bun run build
+        name: Wizard production build
+        working-directory: pixie-wizard
