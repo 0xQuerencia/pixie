@@ -690,6 +690,13 @@ test("internalTestQuestion probes retrieval+grounding with no Slack or ticket si
   });
   const ticketsBefore = db.handle().query("SELECT COUNT(*) as count FROM tickets").get().count;
   const cacheBefore = db.handle().query("SELECT COUNT(*) as count FROM answer_cache").get().count;
+  const sideEffectTables = ["ticket_events", "ticket_notes", "support_memory", "metrics", "llm_usage"];
+  const sideEffectsBefore = Object.fromEntries(
+    sideEffectTables.map((table: string) => [
+      table,
+      db.handle().query(`SELECT COUNT(*) as count FROM ${table}`).get().count,
+    ]),
+  );
 
   const engagementMod = require("../pipeline/engagement");
   const origClassify = engagementMod.classify;
@@ -724,6 +731,17 @@ test("internalTestQuestion probes retrieval+grounding with no Slack or ticket si
   assert.equal(ticketsAfter, ticketsBefore, "the probe must never create tickets");
   const cacheAfter = db.handle().query("SELECT COUNT(*) as count FROM answer_cache").get().count;
   assert.equal(cacheAfter, cacheBefore, "the probe must never write answer_cache");
+  const sideEffectsAfter = Object.fromEntries(
+    sideEffectTables.map((table: string) => [
+      table,
+      db.handle().query(`SELECT COUNT(*) as count FROM ${table}`).get().count,
+    ]),
+  );
+  assert.deepEqual(
+    sideEffectsAfter,
+    sideEffectsBefore,
+    "the probe must not write operational telemetry or support data",
+  );
   assert.equal((await api.internalTestQuestion("nope-missing-prog", { question: "hi" })).error, "unknown program");
   assert.match((await api.internalTestQuestion("dash-probe", { question: "  " })).error, /question required/);
 });

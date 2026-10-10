@@ -1605,11 +1605,155 @@ test("rate limiting posts limit message but does not create tickets or leave stu
   assert.equal(ticket, null, "rate limiting must not open tickets");
   assert.match(client.calls.posts.join(" "), /slow down a sec/);
   assert.deepEqual(
-    client.calls.posts.filter((t: string) => t === "_thinking..._"),
+    client.calls.posts.filter((t: string) => t === reply.THINKING),
     [],
     "no placeholder posted",
   );
 });
+
+test("rate-limit notice failure still records one metric and final trace", async () => {
+  const rateLimit = require("./rateLimit");
+  const slackMessages = require("./slackMessages");
+  const originalCheck = rateLimit.check;
+  const originalSend = slackMessages.sendProgramMessage;
+  const originalRecordMetric = db.recordMetric;
+  const metrics: unknown[][] = [];
+  const threadTs = "t-rate-limit-failure";
+  const program = programs.forChannel("C1");
+  rateLimit.check = () => ({ allowed: false, reason: "limit" });
+  slackMessages.sendProgramMessage = async () => {
+    throw new Error("Slack unavailable");
+  };
+  db.recordMetric = (...args: unknown[]) => {
+    metrics.push(args);
+    return originalRecordMetric(...args);
+  };
+  try {
+    const replied = await respond.respond({
+      client: fakeClient(),
+      channel: "C1",
+      threadTs,
+      userId: "U-rate-limit-failure",
+      question: "pixie can you help?",
+      mode: respond.ALWAYS,
+    });
+    assert.equal(replied, false);
+  } finally {
+    rateLimit.check = originalCheck;
+    slackMessages.sendProgramMessage = originalSend;
+    db.recordMetric = originalRecordMetric;
+  }
+
+  assert.equal(metrics.filter(([kind]) => kind === "rate_limited").length, 1);
+  const finalAction = traceStore
+    .forThread(program.id, threadTs)
+    .find((row: { stage: string }) => row.stage === "final_action");
+  assert.deepEqual(finalAction?.payload, { action: "silence", reason: "rate_limited" });
+});
+
+test("same-thread turns serialize before the next provider call or placeholder", async () => {
+  await withHelpProgram({ id: "thread-queue" }, async (programId: string, channel: string) => {
+    const client = richClient();
+    const originalIntent = intent.classifyIntent;
+    const originalKnown = lookup.knownAnswer;
+    const originalAnswer = lookup.answerOrChat;
+    const started = deferred();
+    const release = deferred();
+    let calls = 0;
+    intent.classifyIntent = async () => intent.HELP_NEEDED;
+    lookup.knownAnswer = async () => null;
+    lookup.answerOrChat = async () => {
+      calls += 1;
+      if (calls === 1) {
+        started.resolve();
+        await release.promise;
+      }
+      return verifiedAnswer("Docs", "the verified answer", programId);
+    };
+
+    try {
+      const first = respond.respond({
+        client,
+        channel,
+        threadTs: "thread-queue-root",
+        messageTs: "thread-queue-message-1",
+        userId: "U-thread-1",
+        question: "first question",
+        mode: respond.ALWAYS,
+      });
+      await started.promise;
+      const second = respond.respond({
+        client,
+        channel,
+        threadTs: "thread-queue-root",
+        messageTs: "thread-queue-message-2",
+        userId: "U-thread-2",
+        question: "second question",
+        mode: respond.ALWAYS,
+      });
+      await Promise.resolve();
+      assert.equal(calls, 1);
+      assert.equal(client.posts.length, 0);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(client.posts.filter((post: SlackPost) => post.text === reply.THINKING).length, 1);
+      release.resolve();
+      await Promise.all([first, second]);
+      assert.equal(calls, 2);
+      assert.equal(client.posts.filter((post: SlackPost) => post.text === reply.THINKING).length, 1);
+    } finally {
+      intent.classifyIntent = originalIntent;
+      lookup.knownAnswer = originalKnown;
+      lookup.answerOrChat = originalAnswer;
+    }
+  });
+});
+
+test("late stream text after lookup failure cannot create another placeholder", async () => {
+  await withHelpProgram({ id: "late-stream" }, async (_programId: string, channel: string) => {
+    const client = richClient();
+    const originalIntent = intent.classifyIntent;
+    const originalKnown = lookup.knownAnswer;
+    const originalAnswer = lookup.answerOrChat;
+    let lateText: ((text: string) => void) | null = null;
+    intent.classifyIntent = async () => intent.HELP_NEEDED;
+    lookup.knownAnswer = async () => null;
+    lookup.answerOrChat = async (_question: string, _prompt: string, options: { onText?: (text: string) => void }) => {
+      lateText = options.onText || null;
+      throw new Error("provider failed");
+    };
+
+    try {
+      await assert.doesNotReject(() =>
+        respond.respond({
+          client,
+          channel,
+          threadTs: "late-stream-root",
+          userId: "U-late-stream",
+          question: "my board is broken",
+          mode: respond.ALWAYS,
+        }),
+      );
+      const postCount = client.posts.length;
+      lateText?.("late answer");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.equal(client.posts.length, postCount);
+    } finally {
+      intent.classifyIntent = originalIntent;
+      lookup.knownAnswer = originalKnown;
+      lookup.answerOrChat = originalAnswer;
+    }
+  });
+});
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 test("answer generation throwing still leaves an open, usable ticket in the thread", async () => {
   const db = require("./db");

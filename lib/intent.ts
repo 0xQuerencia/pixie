@@ -40,6 +40,7 @@ interface IntentOptions {
   threadMessages?: unknown[];
   recentMessages?: unknown[] | null;
   returnContext?: boolean;
+  noTelemetry?: boolean;
 }
 
 const MAX_TOKENS = 20;
@@ -258,6 +259,10 @@ function historyFor(userId: string | null, channel: string | null, current: stri
   }
 }
 
+function telemetryEnabled(noTelemetry = false) {
+  return !noTelemetry && !(typeof llm.telemetrySuppressed === "function" && llm.telemetrySuppressed());
+}
+
 function scopedFor(program: Program | null, addressed = false): boolean {
   if (addressed) return false;
   if (!program) return false;
@@ -275,6 +280,7 @@ async function classifyIntent(
     threadMessages = [],
     recentMessages = null,
     returnContext = false,
+    noTelemetry = false,
   }: IntentOptions = {},
 ): Promise<string | ContextResult | null> {
   if (!message || message.length < MIN_LENGTH) return null;
@@ -298,7 +304,7 @@ async function classifyIntent(
           { role: "system", content: intentSystemPrompt(program, { scoped }) },
           { role: "user", content: buildUserPrompt(message, recent, { threadMessages, recentMessages }) },
         ],
-        telemetry: { operation: "intent", programId: program?.id || null, channel },
+        telemetry: { operation: "intent", programId: program?.id || null, channel, noTelemetry },
       },
       "intent",
     );
@@ -306,29 +312,31 @@ async function classifyIntent(
     const parsed = parseContextResult(text, { scoped });
     if (!parsed && typeof text === "string" && text.trim()) {
       log.warn("intent", `unparseable classifier output: ${text.slice(0, 120).replace(/\s+/g, " ")}`);
-      try {
-        recordMetric(
-          "intent_parse_failure",
-          null,
-          scoped ? "scoped" : "open",
-          program && program.id ? program.id : null,
-        );
-      } catch (error) {
-        const failure = error instanceof Error ? error : new Error(String(error));
-        log.debug("intent", `could not record classifier parse failure: ${failure.message}`);
-      }
+      if (telemetryEnabled(noTelemetry))
+        try {
+          recordMetric(
+            "intent_parse_failure",
+            null,
+            scoped ? "scoped" : "open",
+            program && program.id ? program.id : null,
+          );
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          log.debug("intent", `could not record classifier parse failure: ${failure.message}`);
+        }
     }
     const result = normalizeIntentResult(parsed, { addressed });
     return returnContext ? result : result?.verdict || null;
   } catch (e) {
     const error = e instanceof Error ? e : new Error(String(e));
     log.error("intent", "classification failed:", error.message);
-    try {
-      recordMetric("intent_parse_failure", null, "call_failed", program && program.id ? program.id : null);
-    } catch (failure) {
-      const detail = failure instanceof Error ? failure : new Error(String(failure));
-      log.debug("intent", `could not record classifier failure: ${detail.message}`);
-    }
+    if (telemetryEnabled(noTelemetry))
+      try {
+        recordMetric("intent_parse_failure", null, "call_failed", program && program.id ? program.id : null);
+      } catch (failure) {
+        const detail = failure instanceof Error ? failure : new Error(String(failure));
+        log.debug("intent", `could not record classifier failure: ${detail.message}`);
+      }
     return null;
   }
 }

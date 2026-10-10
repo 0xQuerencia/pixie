@@ -66,6 +66,7 @@ interface EvaluationDeps {
   evaluateFn?: EvaluateFn;
   httpPost?: unknown;
   timeoutMs?: number;
+  noTelemetry?: boolean;
 }
 interface SupportInput extends JevStateInput {}
 interface SupportOutcome {
@@ -320,6 +321,11 @@ function clearDecisionCache() {
   inflightEvaluations.clear();
 }
 
+function telemetryEnabled(noTelemetry = false) {
+  const llm = require("./llm");
+  return !noTelemetry && !(typeof llm.telemetrySuppressed === "function" && llm.telemetrySuppressed());
+}
+
 function logDecision({
   intent,
   shouldEngageP,
@@ -413,9 +419,11 @@ async function evaluateSupportDecision(
     // cache side effects
     if (hit && hit.expiresAt > Date.now()) {
       jevStats.cacheHits += 1;
-      try {
-        require("./db").recordMetric("jev_cache_hit", 0, hit.result.action || null, state.program?.id || null);
-      } catch (_) {}
+      if (telemetryEnabled(deps.noTelemetry)) {
+        try {
+          require("./db").recordMetric("jev_cache_hit", 0, hit.result.action || null, state.program?.id || null);
+        } catch (_) {}
+      }
       log.info(
         "jev",
         `[jev] cached=true action=${hit.result.action} reason=${hit.result.reason}${keyHash ? ` key=${keyHash}` : ""}`,
@@ -449,9 +457,11 @@ async function evaluateSupportDecision(
         model,
         keyHash,
       });
-      try {
-        require("./db").recordMetric("jev_decision", latencyMs, `${action}:${reason}`, state.program?.id || null);
-      } catch (_) {}
+      if (telemetryEnabled(deps.noTelemetry)) {
+        try {
+          require("./db").recordMetric("jev_decision", latencyMs, `${action}:${reason}`, state.program?.id || null);
+        } catch (_) {}
+      }
       const outcome = { action, intent: decision.intent, shouldEngageP, reason, latencyMs, errorKind: null };
       if (key) {
         jevStats.calls += 1;
@@ -482,9 +492,11 @@ async function evaluateSupportDecision(
       model,
       keyHash,
     });
-    try {
-      require("./db").recordMetric("jev_error", latencyMs, errorKind, state.program?.id || null);
-    } catch (_) {}
+    if (telemetryEnabled(deps.noTelemetry)) {
+      try {
+        require("./db").recordMetric("jev_error", latencyMs, errorKind, state.program?.id || null);
+      } catch (_) {}
+    }
     return { action: "error", intent: null, shouldEngageP: null, reason, latencyMs, errorKind };
   }
 }

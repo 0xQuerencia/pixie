@@ -4,6 +4,7 @@ const { test, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const db = require("./db");
 const jev = require("./jevDecision");
 const log = require("./log");
 const { readSource } = require("./test-source");
@@ -226,6 +227,17 @@ test("structured log line never contains message or context text", async () => {
   }
   assert.ok(lines.length > 0);
   for (const line of lines) assert.doesNotMatch(line, new RegExp(marker));
+});
+
+test("noTelemetry suppresses JEV decision metrics", async () => {
+  const baseline = db.handle().query("SELECT COUNT(*) c FROM metrics WHERE kind = 'jev_decision'").get().c;
+  await jev.evaluateSupportDecision(input("what is acme?"), {
+    config: CFG,
+    noTelemetry: true,
+    evaluateFn: async () => result("support_question", 0.95),
+  });
+  const after = db.handle().query("SELECT COUNT(*) c FROM metrics WHERE kind = 'jev_decision'").get().c;
+  assert.equal(after, baseline);
 });
 
 test("disabled Jev returns existing without evaluating", async () => {

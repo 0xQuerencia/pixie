@@ -13,6 +13,7 @@ import brand = require("./brand");
 import capabilities = require("./capabilities");
 import configModule = require("./config");
 import stats = require("./stats");
+import traceStore = require("./pipeline/traceStore");
 import type { Program, SlackClient } from "./types";
 import type { LearnedRow } from "./db.types";
 
@@ -239,9 +240,25 @@ async function askCommand({ command, ack, respond: sendEphemeral }: CommandArgs)
 
   const askPolicy = require("./channelPolicy").resolve(command.channel_id, command.team_id || null);
   const askProgram = askPolicy.role === "none" ? null : askPolicy.program;
+  const traceRequestId = `command:${command.user_id || "unknown"}:${Date.now()}`;
+  const appendCommandFinalAction = (action: string, reason: string) => {
+    if (!askProgram?.id) return;
+    try {
+      traceStore.append({
+        programId: askProgram.id,
+        threadTs: command.thread_ts || null,
+        requestId: traceRequestId,
+        stage: "final_action",
+        payload: { action, reason },
+      });
+    } catch (error: unknown) {
+      log.debug("commands", `answer trace write failed: ${errorMessage(error)}`);
+    }
+  };
   try {
     const result = askProgram ? await lookupAnswer(question, "", askProgram, command.channel_id as string) : null;
     if (result) {
+      appendCommandFinalAction("reply", "command_answer");
       await sendEphemeral({
         response_type: "ephemeral",
         text: `${result.answer}${respond.sourceLineFor(result.source, askProgram)}`,
@@ -253,10 +270,12 @@ async function askCommand({ command, ack, respond: sendEphemeral }: CommandArgs)
     if (askProgram) recordGap(question, command.user_id as string, command.channel_id as string, null, askProgram.id);
     const { getChatReply } = require("./chat");
     const chatReply = await getChatReply(question, "", command.channel_id === config.slack.helpChannel);
+    appendCommandFinalAction(chatReply ? "reply_chat" : "fallback", "command_answer");
     await sendEphemeral({ response_type: "ephemeral", text: chatReply || respond.MENTION_FALLBACK });
     db.recordMetric(chatReply ? "answer_chat" : "fallback");
   } catch (e: unknown) {
     log.error("commands", `${brand.cmd()} failed:`, errorMessage(e));
+    appendCommandFinalAction("error_reply", "command_error");
     await sendEphemeral({ response_type: "ephemeral", text: respond.ERROR_FALLBACK });
   }
 }

@@ -8,6 +8,7 @@ const log = require("../log");
 const config = require("../config").config;
 const { probe } = require("../probe");
 const retrieve = require("../retrieve");
+const llm = require("../llm");
 const claimVerifier = require("../claimVerifier");
 const { coverageStats, relativeTime } = require("../stats");
 import type { Program, ProgramSource, SlackClient, Ticket } from "../types";
@@ -1107,7 +1108,7 @@ function sourceNamesFromContext(context: string): string[] {
   return names;
 }
 
-async function internalTestQuestion(programId: string, body: TestQuestionBody = {}): Promise<ApiResponse> {
+async function internalTestQuestionImpl(programId: string, body: TestQuestionBody = {}): Promise<ApiResponse> {
   const program = programs.get(programId);
   if (!program) return { error: "unknown program" };
   const question = String(body.question || "").trim();
@@ -1136,7 +1137,13 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
 
   let engagement = { engage: false, intent: null, error: "unavailable", source: null };
   try {
-    engagement = await require("../pipeline/engagement").classify({ message: question, program, role, addressed });
+    engagement = await require("../pipeline/engagement").classify({
+      message: question,
+      program,
+      role,
+      addressed,
+      noTelemetry: true,
+    });
   } catch (_) {}
 
   let context = "";
@@ -1171,7 +1178,10 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
 
   let result = null;
   try {
-    result = await require("../lookup").lookupAnswer(question, "", program, null, { skipCache: true });
+    result = await require("../lookup").lookupAnswer(question, "", program, null, {
+      skipCache: true,
+      noTelemetry: true,
+    });
   } catch (error) {
     log.warn("web/api", "test-question lookup failed");
     result = null;
@@ -1224,6 +1234,10 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
     answerPreview:
       decided.expectedAction === "reply" && result && result.answer ? String(result.answer).slice(0, 500) : null,
   };
+}
+
+async function internalTestQuestion(programId: string, body: TestQuestionBody = {}): Promise<ApiResponse> {
+  return llm.withNoTelemetry(() => internalTestQuestionImpl(programId, body));
 }
 
 function internalTicketSearch(params: TicketSearchParams): ApiResponse {
