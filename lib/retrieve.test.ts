@@ -89,6 +89,23 @@ test("scoreDetailed reranks a paraphrase while retaining source metadata", () =>
   assert.ok(top.total >= top.lexical);
 });
 
+test("policy retrieval does not admit a semantic-only referral match", () => {
+  const local = retrieve.buildIndex(
+    retrieve.chunkSections([
+      ["Refund policy", "Refunds are allowed before activation."],
+      ["Referral guide", "Referral codes expire in 48 hours after being generated."],
+    ]),
+  );
+  const scores = retrieve.scoreDetailed(local, "When is the refund deadline?");
+
+  assert.equal(scores.length, 1);
+  assert.match(scores[0].chunk.text, /Refunds are allowed/);
+  assert.equal(
+    scores.some((entry) => /Referral codes expire/.test(entry.chunk.text)),
+    false,
+  );
+});
+
 test("selectChunks returns nothing when no term matches", () => {
   assert.deepEqual(retrieve.selectChunks(index, "zzzz qqqq"), []);
   assert.deepEqual(retrieve.selectChunks(index, ""), []);
@@ -100,7 +117,7 @@ test("selectChunks respects the character budget", () => {
   assert.ok(total <= 300, `selected ${total} chars against a 300 budget`);
 });
 
-test("selectChunks stops at the first chunk that doesn't fit, instead of skipping ahead to a smaller lower-ranked one", () => {
+test("selectChunks skips an oversized top chunk and keeps a later eligible chunk", () => {
   const BIG = "gizmo ".repeat(40) + "widget contraption apparatus mechanism instrument.";
   const SMALL = "gizmo mentioned once, short.";
 
@@ -119,7 +136,9 @@ test("selectChunks stops at the first chunk that doesn't fit, instead of skippin
   const budget = second.chunk.text.length + 5;
   assert.ok(budget < top.chunk.text.length, "test setup: top chunk must not fit in the budget");
 
-  assert.deepEqual(retrieve.selectChunks(localIndex, "gizmo", budget), []);
+  const selected = retrieve.selectChunks(localIndex, "gizmo", budget);
+  assert.equal(selected.length, 1);
+  assert.match(selected[0].text, /short/);
 });
 
 const GENERATED = [
@@ -163,7 +182,7 @@ test("selectContext labels passages with the source they came from", () => {
   assert.match(context, /### Acme FAQ/);
 });
 
-test("selectContext falls back to the full corpus when nothing matches", () => {
+test("selectContext uses the capped corpus fallback for a general unknown question", () => {
   const context = retrieve.selectContext({
     generated: GENERATED,
     index,
@@ -174,6 +193,82 @@ test("selectContext falls back to the full corpus when nothing matches", () => {
   assert.match(context, /native size/);
   assert.match(context, /Prizes ship to your door/);
   assert.match(context, /### About pixie/);
+});
+
+test("selectContext does not restore hardware material for an unmatched software query", () => {
+  const sources = [["Hardware guide", "Hardware projects require PCB schematics and wiring diagrams."]];
+  const localIndex = retrieve.buildIndex(retrieve.chunkSections(sources));
+  const context = retrieve.selectContext({
+    generated: [],
+    index: localIndex,
+    sources,
+    question: "What software requirements apply to my project?",
+  });
+
+  assert.doesNotMatch(context, /PCB schematics|wiring diagrams/);
+  assert.doesNotMatch(context, /### Hardware guide/);
+});
+
+test("selectContext does not restore a generic AI allowance for a hardware policy query", () => {
+  const sources = [["AI policy", "You can use AI tools like ChatGPT for up to 30% of your project's software code."]];
+  const localIndex = retrieve.buildIndex(retrieve.chunkSections(sources));
+  const context = retrieve.selectContext({
+    generated: [],
+    index: localIndex,
+    sources,
+    question: "Can AI generate my PCB design for hardware?",
+  });
+
+  assert.doesNotMatch(context, /30%/);
+  assert.doesNotMatch(context, /### AI policy/);
+});
+
+test("selectContext excludes a mixed-domain chunk from an unambiguous software query", () => {
+  const sources = [
+    [
+      "Mixed guide",
+      "## Hardware and Software Requirements\nFor hardware projects, include PCB schematics. For software projects, include a README.",
+    ],
+  ];
+  const localIndex = retrieve.buildIndex(retrieve.chunkSections(sources));
+  const context = retrieve.selectContext({
+    generated: [],
+    index: localIndex,
+    sources,
+    question: "What README is required for my software project?",
+  });
+
+  assert.doesNotMatch(context, /PCB schematics|### Mixed guide/);
+});
+
+test("selectContextDetailed reports selected source and learned evidence with stable IDs", () => {
+  const sources = [["Refund policy", "## Refund policy\nRefunds are allowed before activation."]];
+  const localIndex = retrieve.buildIndex(retrieve.chunkSections(sources));
+  const options = {
+    generated: [],
+    learned: [["Learned answers", "Q: Can I get a refund?\nA: Ask a human helper for review."]],
+    index: localIndex,
+    sources,
+    question: "What is the refund policy?",
+    programId: "acme",
+  };
+  const first = retrieve.selectContextDetailed(options);
+  const second = retrieve.selectContextDetailed(options);
+  const sourceEvidence = first.evidence.find((entry) => entry.authority === "source");
+  const learnedEvidence = first.evidence.find((entry) => entry.kind === "learned");
+
+  assert.match(first.context, /Refunds are allowed/);
+  assert.match(first.context, /Ask a human helper/);
+  assert.ok(sourceEvidence);
+  assert.equal(sourceEvidence.programId, "acme");
+  assert.equal(sourceEvidence.sourceName, "Refund policy");
+  assert.ok(sourceEvidence.text && first.context.includes(sourceEvidence.text));
+  assert.ok(learnedEvidence);
+  assert.equal(learnedEvidence.kind, "learned");
+  assert.equal(learnedEvidence.authority, "learned");
+  assert.equal(learnedEvidence.programId, "acme");
+  assert.ok(learnedEvidence.text && first.context.includes(learnedEvidence.text));
+  assert.deepEqual(first.evidence, second.evidence);
 });
 
 test("selectContext with generatedLast puts retrieved passages before generated boilerplate", () => {

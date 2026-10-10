@@ -1782,11 +1782,14 @@ function internalIncidents(programId: string, query: IncidentQuery = {}): ApiRes
   );
 }
 
-function internalIncidentDetail(incidentId: number): ApiResponse {
+function internalIncidentDetail(programId: string, incidentId: number): ApiResponse {
+  if (!programId) return { error: "programId required" };
+  const missing = needProgram(programId);
+  if (missing) return missing;
   const incidents = require("../incidents");
-  const inc = incidents.getIncident(Number(incidentId));
+  const inc = incidents.getIncident(Number(incidentId), programId);
   if (!inc) return { error: "incident not found" };
-  return { incident: inc, tickets: incidents.incidentTickets(Number(incidentId)) };
+  return { incident: inc, tickets: incidents.incidentTickets(Number(incidentId), programId) };
 }
 
 function internalIncidentDetect(programId: string, body: IncidentBody = {}): ApiResponse {
@@ -1854,11 +1857,14 @@ async function internalIncidentNotify(incidentId: number, body: IncidentBody = {
   });
 }
 
-function internalIncidentAffected(incidentId: number, query: IncidentQuery = {}): ApiResponse {
+function internalIncidentAffected(programId: string, incidentId: number, query: IncidentQuery = {}): ApiResponse {
+  if (!programId) return { error: "programId required" };
+  const missing = needProgram(programId);
+  if (missing) return missing;
   const incidents = require("../incidents");
-  const inc = incidents.getIncident(Number(incidentId));
+  const inc = incidents.getIncident(Number(incidentId), programId);
   if (!inc) return { error: "incident not found" };
-  const reports = incidents.affectedReports(Number(incidentId), query.onlyUnnotified === "1");
+  const reports = incidents.affectedReports(Number(incidentId), query.onlyUnnotified === "1", programId);
   return {
     total: reports.length,
     unnotified: reports.filter((r: AffectedReportRow) => !r.notified_at).length,

@@ -844,8 +844,10 @@ async function handleApi(req: Request): Promise<Response | null> {
     }
     const incidentRoute = url.pathname.match(/^\/internal\/v1\/incidents\/(\d+)$/);
     if (incidentRoute && method === "GET") {
-      const res = api.internalIncidentDetail(Number(incidentRoute[1]));
-      return json(res, res.error ? 404 : 200);
+      const programId = url.searchParams.get("programId") || "";
+      const res = api.internalIncidentDetail(programId, Number(incidentRoute[1]));
+      const status = res.error === "programId required" ? 400 : res.error ? 404 : 200;
+      return json(res, status);
     }
     if (incidentRoute && method === "PATCH") {
       const res = api.internalIncidentAction(Number(incidentRoute[1]), body);
@@ -858,10 +860,12 @@ async function handleApi(req: Request): Promise<Response | null> {
     }
     const incidentAffectedRoute = url.pathname.match(/^\/internal\/v1\/incidents\/(\d+)\/affected$/);
     if (incidentAffectedRoute && method === "GET") {
-      const res = api.internalIncidentAffected(Number(incidentAffectedRoute[1]), {
+      const programId = url.searchParams.get("programId") || "";
+      const res = api.internalIncidentAffected(programId, Number(incidentAffectedRoute[1]), {
         onlyUnnotified: url.searchParams.get("onlyUnnotified"),
       });
-      return json(res, res.error ? 404 : 200);
+      const status = res.error === "programId required" ? 400 : res.error ? 404 : 200;
+      return json(res, status);
     }
     const radarRoute = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/radar$/);
     if (radarRoute && method === "GET") {

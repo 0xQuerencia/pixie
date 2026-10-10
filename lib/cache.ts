@@ -21,6 +21,7 @@ interface CacheOptions {
 }
 
 const VOLATILE_SOURCE = "Program timeline";
+const POLARITY_TERMS = new Set(["not", "no", "never", "cannot", "cant", "can't", "wont", "won't"]);
 
 function isVolatile(source: string | null | undefined) {
   // Volatile timeline
@@ -29,8 +30,14 @@ function isVolatile(source: string | null | undefined) {
 }
 
 function normalize(question: string) {
-  const terms = retrieve.tokenize((question || "").replace(/<@[^>]+>/g, " "));
-  return [...new Set(terms)].sort().join(" ");
+  const cleaned = (question || "").replace(/<@[^>]+>/g, " ");
+  const terms = retrieve.tokenize(cleaned);
+  const polarity = cleaned
+    .toLowerCase()
+    .replace(/[^a-z0-9\s']/g, " ")
+    .split(/\s+/)
+    .filter((term) => POLARITY_TERMS.has(term));
+  return [...new Set([...terms, ...polarity])].sort().join(" ");
 }
 
 function keyFor(question: string, programId: string | null = null) {

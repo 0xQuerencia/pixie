@@ -23,6 +23,7 @@ const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
 const api = require("./api");
+const incidents = require("../incidents");
 
 before(() => {
   db.close();
@@ -67,6 +68,44 @@ test("manual incident creation is helper-gated and tenant-scoped", () => {
     api.internalIncidentCreate("missing-manual", { actorId: "U-manual-a", title: "x", publicMessage: "x" }).error,
     /unknown program/,
   );
+});
+
+test("incident detail and affected-report reads enforce the requested program", () => {
+  api.internalProgramSync("read-api-a", {
+    name: "Read API A",
+    workspaceId: "TW-RA",
+    claimedBy: "U-read-api-a",
+    programChannels: [],
+  });
+  api.internalProgramSync("read-api-b", {
+    name: "Read API B",
+    workspaceId: "TW-RB",
+    claimedBy: "U-read-api-b",
+    programChannels: [],
+  });
+  const created = api.internalIncidentCreate("read-api-a", {
+    actorId: "U-read-api-a",
+    title: "Read API outage",
+  });
+  const incidentId = created.incident.id;
+  incidents.recordAffectedReport({
+    incidentId,
+    programId: "read-api-a",
+    requesterId: "U-requester",
+    channel: "C-read-api",
+    threadTs: "read-api-thread",
+  });
+
+  const detail = api.internalIncidentDetail("read-api-a", incidentId);
+  assert.equal(detail.incident.program_id, "read-api-a");
+  assert.equal(detail.tickets.length, 0);
+  assert.match(api.internalIncidentDetail("read-api-b", incidentId).error, /not found/);
+  assert.match(api.internalIncidentDetail("", incidentId).error, /programId required/);
+
+  const affected = api.internalIncidentAffected("read-api-a", incidentId, {});
+  assert.equal(affected.total, 1);
+  assert.match(api.internalIncidentAffected("read-api-b", incidentId, {}).error, /not found/);
+  assert.match(api.internalIncidentAffected("", incidentId, {}).error, /programId required/);
 });
 
 test("program usage is validated, bounded, tenant-isolated, and metadata-only", () => {

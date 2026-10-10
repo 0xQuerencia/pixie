@@ -416,4 +416,70 @@ test("POST /internal/v1/programs/:id/incidents/manual creates only for a program
     else process.env.PIXIE_INTERNAL_TOKEN = saved;
   }
 });
+
+test("GET incident detail and affected routes require and enforce programId", async () => {
+  const saved = process.env.PIXIE_INTERNAL_TOKEN;
+  process.env.PIXIE_INTERNAL_TOKEN = "scoped-incident-token";
+  const serve = require("./serve");
+  const api = require("./api");
+  const incidents = require("../incidents");
+  const H = withToken("scoped-incident-token");
+  try {
+    api.internalProgramSync("read-route-a", {
+      name: "Read route A",
+      workspaceId: "TW-RRA",
+      claimedBy: "U-rra",
+      programChannels: [],
+    });
+    api.internalProgramSync("read-route-b", {
+      name: "Read route B",
+      workspaceId: "TW-RRB",
+      claimedBy: "U-rrb",
+      programChannels: [],
+    });
+    const created = api.internalIncidentCreate("read-route-a", { actorId: "U-rra", title: "Route outage" });
+    const incidentId = created.incident.id;
+    incidents.recordAffectedReport({
+      incidentId,
+      programId: "read-route-a",
+      requesterId: "U-route-requester",
+      channel: "C-route",
+      threadTs: "route-thread",
+    });
+
+    const missing = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}`, { headers: H }),
+    );
+    assert.equal(missing.status, 400);
+
+    const detail = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}?programId=read-route-a`, { headers: H }),
+    );
+    assert.equal(detail.status, 200);
+    assert.equal((await detail.json()).incident.program_id, "read-route-a");
+
+    const foreign = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}?programId=read-route-b`, { headers: H }),
+    );
+    assert.equal(foreign.status, 404);
+
+    const affected = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}/affected?programId=read-route-a`, {
+        headers: H,
+      }),
+    );
+    assert.equal(affected.status, 200);
+    assert.equal((await affected.json()).total, 1);
+
+    const foreignAffected = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}/affected?programId=read-route-b`, {
+        headers: H,
+      }),
+    );
+    assert.equal(foreignAffected.status, 404);
+  } finally {
+    if (saved === undefined) delete process.env.PIXIE_INTERNAL_TOKEN;
+    else process.env.PIXIE_INTERNAL_TOKEN = saved;
+  }
+});
 export {};
