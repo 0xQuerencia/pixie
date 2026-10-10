@@ -210,6 +210,7 @@ const UNIT_ALIASES: Record<string, string> = {
   points: "points",
 };
 const TOKEN_ALIASES: Record<string, string> = {
+  sent: "send",
   allowed: "allow",
   allows: "allow",
   permit: "allow",
@@ -385,6 +386,7 @@ function numericSignatures(text: string) {
 }
 
 function canonicalToken(token: string) {
+  token = token.replace(/'s$/, "");
   if (TOKEN_ALIASES[token]) return TOKEN_ALIASES[token];
   if (token.endsWith("ies") && token.length > 4) return `${token.slice(0, -3)}y`;
   if (token.endsWith("ing") && token.length > 5) return token.slice(0, -3);
@@ -459,6 +461,83 @@ function fixtureMatch(claim: string, fixtureClaims: unknown[]) {
   return fixtureClaims.some((item) => claimKey(textOf(item)) === key);
 }
 
+const GLUE_WORDS = new Set([
+  "yes",
+  "also",
+  "please",
+  "just",
+  "simply",
+  "really",
+  "actually",
+  "basically",
+  "sure",
+  "then",
+  "here",
+  "there",
+  "they",
+  "them",
+  "you",
+  "your",
+  "yours",
+  "we",
+  "our",
+  "get",
+  "gets",
+  "got",
+  "thanks",
+  "hey",
+  "hello",
+  "okay",
+  "so",
+  "too",
+  "still",
+  "need",
+  "needs",
+  "make",
+  "makes",
+  "give",
+  "gives",
+  "keep",
+  "let",
+  "use",
+]);
+const RELATION_RE =
+  /\b(?:before|after|within|until|during|or|once|twice|only|each|every|any|per|unless|except|without)\b/g;
+const MODAL_CLASSES: Array<[string, RegExp]> = [
+  ["oblige", /\b(?:must|required?|requires?|has to|have to|need to|needs to|mandatory)\b/],
+  ["permit", /\b(?:can|could|may|allowed|able to|permitted)\b/],
+  ["advise", /\bshould\b/],
+];
+
+function relationWords(value: string) {
+  return new Set(normalizeText(value).match(RELATION_RE) || []);
+}
+
+function modalClasses(value: string) {
+  const text = normalizeText(value);
+  return new Set(MODAL_CLASSES.filter(([, pattern]) => pattern.test(text)).map(([name]) => name));
+}
+
+function isSubset<T>(subset: Set<T>, superset: Set<T>) {
+  return [...subset].every((item) => superset.has(item));
+}
+
+function missingContent(claim: string, sentence: string) {
+  const evidenceTokens = new Set(contentTokens(sentence));
+  return [...new Set(contentTokens(claim))].filter((token) => !evidenceTokens.has(token) && !GLUE_WORDS.has(token));
+}
+
+// One evidence sentence must carry every claim detail
+function sentenceSupportsClaim(claim: string, sentence: string, claimNumbers: Set<string>) {
+  if (contentTokens(claim).filter((token) => !GLUE_WORDS.has(token)).length === 0) return false;
+  if (missingContent(claim, sentence).length > 0) return false;
+  if (!isSubset(relationWords(claim), relationWords(sentence))) return false;
+  if (!isSubset(modalClasses(claim), modalClasses(sentence))) return false;
+  const evidenceNumbers = numericSignatures(sentence);
+  if (![...claimNumbers].every((token) => evidenceNumbers.has(token))) return false;
+  return sameMeaningShape(claim, sentence);
+}
+
 function deterministicClaim(claim: string, evidence: ClaimEvidence[], programId: string): VerifiedClaim {
   const usable = evidence.filter((item) => evidenceAllowed(item, programId));
   const supporting: ClaimEvidence[] = [];
@@ -466,20 +545,12 @@ function deterministicClaim(claim: string, evidence: ClaimEvidence[], programId:
   const claimNumbers = numericSignatures(claim);
 
   for (const item of usable) {
-    const text = textOf(item.text);
-    const sentences = splitSentences(text);
-    const best = sentences
-      .map((sentence) => ({ sentence, score: coverage(claim, sentence) }))
-      .sort((a, b) => b.score - a.score)[0];
-    const hasNumbers = [...claimNumbers].every((token) => numericSignatures(text).has(token));
-    const matching = best && best.score >= 0.75 && hasNumbers;
-    if (matching && sameMeaningShape(claim, best.sentence)) supporting.push(item);
-    if (matching && negationParity(claim) !== negationParity(best.sentence)) contradictory.push(item);
-
+    const sentences = splitSentences(textOf(item.text));
+    if (sentences.some((sentence) => sentenceSupportsClaim(claim, sentence, claimNumbers))) supporting.push(item);
     const hasContradictingSentence = sentences.some(
       (sentence) => coverage(claim, sentence) >= 0.75 && negationParity(claim) !== negationParity(sentence),
     );
-    if (hasContradictingSentence && !contradictory.includes(item)) contradictory.push(item);
+    if (hasContradictingSentence) contradictory.push(item);
   }
 
   if (contradictory.length > 0) {

@@ -316,3 +316,40 @@ test("hasPolicyClaims flags policy talk but not casual numbers", () => {
   assert.equal(claimVerifier.hasPolicyClaims("Refunds are prohibited."), true);
   assert.equal(claimVerifier.hasPolicyClaims("Bake the cookies at 180C for ten minutes."), false);
 });
+
+const RULES_DOC =
+  "Unused grants may be returned before activation. Refund requests must be sent to the helper channel within 14 days. Projects must be public on GitHub. AI tools may generate at most 30% of project code. Payouts are processed within 5 business days after approval. Submissions that copy tutorials without changes are rejected. Teams of up to 4 people can apply. You can resubmit after fixing the reviewer notes.";
+
+test("small wording swaps and added details cannot slip past the verifier", () => {
+  const blocked = [
+    "Payouts are processed within 5 business days after approval. Also, late payouts get a $50 bonus.",
+    "Teams of up to 6 people can apply.",
+    "Teams of up to 4 people cannot apply.",
+    "Payouts are processed within 5 business days before approval.",
+    "Projects must not be public on GitHub.",
+    "Refund requests must be sent to the helper channel within 41 days.",
+    "You can resubmit once, after fixing the reviewer notes.",
+    "AI tools may generate at most 30% of project code, and 100% of the README.",
+    "Projects must be public on GitHub or GitLab.",
+    "Submissions that copy tutorials without changes are approved.",
+    "Payouts are processed within 5 calendar days after approval.",
+    "Payouts are processed within 5 business days after rejection.",
+    "Projects can be public on GitHub.",
+    "Everyone gets a refund automatically.",
+    "The deadline is June 30.",
+  ];
+  for (const answer of blocked) assert.equal(sendable(answer, RULES_DOC), false, answer);
+});
+
+test("answers that restate the docs are still sendable", () => {
+  const allowed = [
+    "Unused grants may be returned before activation.",
+    "Send refund requests to the helper channel within 14 days.",
+    "Your project has to be public on GitHub.",
+    "Up to 4 people can be on a team.",
+    "Yes, you can resubmit after fixing the reviewer notes.",
+    "Hey! Projects must be public on GitHub. Let me know if you need anything else!",
+    "- Projects must be public on GitHub\n- AI tools may generate at most 30% of project code",
+  ];
+  for (const answer of allowed) assert.equal(sendable(answer, RULES_DOC), true, answer);
+});

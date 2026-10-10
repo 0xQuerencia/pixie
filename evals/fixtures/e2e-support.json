@@ -310,6 +310,96 @@
         "action": "ticket+helper",
         "grounded": false
       }
+    },
+    {
+      "name": "send: supported answer is posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "Can I get my money back if I never activated the grant?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Unused grants may be returned before activation.",
+      "expect": {
+        "posted": true,
+        "postIncludes": [
+          "may be returned before activation"
+        ]
+      }
+    },
+    {
+      "name": "send: invented bonus is never posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "Can I get a $500 bonus for finishing early?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Yes, finishing early earns a $500 bonus.",
+      "expect": {
+        "postExcludes": [
+          "$500"
+        ]
+      }
+    },
+    {
+      "name": "send: wrong percent is never posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "How much AI code is allowed?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: AI tools may generate at most 50% of project code.",
+      "expect": {
+        "postExcludes": [
+          "50%"
+        ]
+      }
+    },
+    {
+      "name": "send: poisoned cache entry is never served",
+      "category": "send_path",
+      "program": "A",
+      "question": "How long do I have to ask for a refund?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Refund requests must be sent to the helper channel within 14 days.",
+      "expect": {
+        "postExcludes": [
+          "90 days"
+        ]
+      },
+      "cachePoison": {
+        "source": "Rules",
+        "answer": "Refunds are available for 90 days."
+      }
+    },
+    {
+      "name": "send: memory-only claim is never posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "How long do I have to ask for a refund?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Refunds are available for 90 days.",
+      "expect": {
+        "postExcludes": [
+          "90 days"
+        ]
+      },
+      "memory": [
+        {
+          "kind": "problem",
+          "value": "Refunds are available for 90 days."
+        }
+      ]
+    },
+    {
+      "name": "send: chatter posts nothing",
+      "category": "send_path",
+      "program": "A",
+      "question": "lol nice",
+      "path": "respond",
+      "expect": {
+        "posted": false
+      },
+      "engagement": {
+        "engage": false,
+        "intent": "human_conversation"
+      }
     }
   ]
 }

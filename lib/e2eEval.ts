@@ -22,13 +22,17 @@ interface E2eExpect {
   promptIncludes?: string[];
   promptExcludes?: string[];
   answerIncludes?: string;
+  posted?: boolean;
+  postIncludes?: string[];
+  postExcludes?: string[];
 }
 interface E2eCase {
   name: string;
   category: string;
   program: string;
   question: string;
-  path?: "probe" | "lookup";
+  path?: "probe" | "lookup" | "respond";
+  cachePoison?: { source: string; answer: string };
   engagement?: { engage: boolean; intent?: string };
   addressed?: boolean;
   model?: string;
@@ -148,6 +152,36 @@ async function runCase(item: E2eCase, fixture: E2eFixture): Promise<E2eResult> {
         failures.push(`grounded ${res.grounded} != ${item.expect.grounded}`);
       if (item.expect.answerIncludes && !String(res.answerPreview || "").includes(item.expect.answerIncludes))
         failures.push(`answer missing "${item.expect.answerIncludes}"`);
+    } else if (item.path === "respond") {
+      const posts: string[] = [];
+      const record = (payload: { text?: string; blocks?: unknown }) => {
+        posts.push(`${payload.text || ""} ${payload.blocks ? JSON.stringify(payload.blocks) : ""}`);
+        return { ts: `eval-msg-${posts.length}` };
+      };
+      const client = {
+        chat: {
+          postMessage: async (payload: { text?: string; blocks?: unknown }) => record(payload),
+          update: async (payload: { text?: string; blocks?: unknown }) => record(payload) && {},
+          delete: async () => ({ ok: true }),
+        },
+        reactions: { add: async () => ({}) },
+      };
+      if (item.cachePoison) cache.put(item.question, item.cachePoison, item.program);
+      await require("./respond").respond({
+        client,
+        channel: `C-${item.program}`,
+        threadTs: `eval-thread-${item.name.length}`,
+        userId: USER_ID,
+        question: item.question,
+        mode: require("./respond").HELP_ONLY,
+      });
+      const joined = posts.join("\n");
+      if (item.expect.posted !== undefined && posts.length > 0 !== item.expect.posted)
+        failures.push(`posted ${posts.length > 0} != ${item.expect.posted}`);
+      for (const text of item.expect.postIncludes || [])
+        if (!joined.includes(text)) failures.push(`post missing "${text}"`);
+      for (const text of item.expect.postExcludes || [])
+        if (joined.includes(text)) failures.push(`post leaked "${text}"`);
     } else {
       const program = programs.get(item.program);
       const answerOnlyContext = supportMemory.formatAttemptedSteps(item.program, USER_ID, { maxAgeDays: 30 });
@@ -171,7 +205,8 @@ async function runCase(item: E2eCase, fixture: E2eFixture): Promise<E2eResult> {
   }
 
   const after = countRows(db);
-  for (const table of SIDE_EFFECT_TABLES) {
+  const guarded = item.path === "respond" ? ["learned_facts", "support_memory"] : SIDE_EFFECT_TABLES;
+  for (const table of guarded) {
     if (after[table] !== before[table]) failures.push(`side effect: ${table} ${before[table]} -> ${after[table]}`);
   }
   return { name: item.name, category: item.category, passed: failures.length === 0, failures };
