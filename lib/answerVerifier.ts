@@ -1,4 +1,5 @@
 const grounding = require("./grounding");
+const claimVerifier = require("./claimVerifier");
 
 interface Evidence {
   id?: string;
@@ -6,6 +7,10 @@ interface Evidence {
   program_id?: string;
   supportsClaims?: string[];
   supportedClaims?: string[];
+  kind?: string;
+  authority?: string;
+  status?: string;
+  approved?: boolean;
 }
 
 interface VerifyInput {
@@ -13,6 +18,7 @@ interface VerifyInput {
   verdict: unknown;
   evidence?: Evidence[];
   fixtureClaims?: unknown[];
+  allowFixtures?: boolean;
 }
 
 /**
@@ -24,6 +30,7 @@ function verify(input: VerifyInput) {
     verdict: input.verdict,
     evidence: input.evidence || [],
     fixtureClaims: input.fixtureClaims || [],
+    allowFixtures: input.allowFixtures === true,
     programId: input.programId,
   });
   const claims = Array.isArray(checked.claims) ? checked.claims : [];
@@ -40,4 +47,4 @@ function verify(input: VerifyInput) {
   };
 }
 
-export = { verify };
+export = { verify, verifyAnswer: claimVerifier.verifyAnswer, verifyAnswerSync: claimVerifier.verifyAnswerSync };

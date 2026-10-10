@@ -17,8 +17,7 @@ const supportMemory = require("./supportMemory");
 const traceStore = require("./pipeline/traceStore");
 const knowledge = require("./knowledge");
 const retrieve = require("./retrieve");
-const answerVerifier = require("./answerVerifier");
-import type { ChannelRole, Program, SlackClient } from "./types";
+import type { AnswerVerification, ChannelRole, ClaimEvidence, Program, SlackClient } from "./types";
 
 type ProgramLike = Partial<Program> & { id?: string };
 interface AnswerResult {
@@ -29,6 +28,7 @@ interface AnswerResult {
   groundingVerdict?: unknown;
   evidence?: unknown[];
   fixtureClaims?: unknown[];
+  verification?: AnswerVerification;
 }
 interface UserContext {
   recentTopics?: string[];
@@ -167,33 +167,7 @@ function stripChannelMentions(text: string) {
 }
 
 function isGroundedAnswer(result: AnswerResult | null) {
-  if (!result || !result.source || !result.answer) return false;
-  const source = result.source.trim().toUpperCase();
-  if (!source || source === "NONE") return false;
-  if (/\b(?:not invent|behavior rule|faq rule|unknown|unconfirmed)\b/i.test(source)) {
-    return false;
-  }
-  const ans = result.answer.trim();
-  if (!ans || ans.toUpperCase() === "UNCLEAR") return false;
-
-  const nonAnswerPatterns = [
-    /\bnot sure\b/i,
-    /\bdon'?t know\b/i,
-    /\bdo not know\b/i,
-    /\bno confirmed\b/i,
-    /\bhaven'?t confirmed\b/i,
-    /\bhasn'?t confirmed\b/i,
-    /\bno official\b/i,
-    /\bask in\b/i,
-    /\bsuggest asking\b/i,
-    /\bcheck (?:with|in|the site)\b/i,
-    /<#[a-z0-9]+(?:\|[^>]+)?>/i,
-    /#[-a-z0-9_]+/i,
-  ];
-  for (const pattern of nonAnswerPatterns) {
-    if (pattern.test(ans)) return false;
-  }
-  return true;
+  return result?.verification?.sendable === true;
 }
 
 function buildContextPrompt(threadContext: string | null) {
@@ -248,8 +222,8 @@ async function replyFromCache({
   program = null,
 }: CacheReplyArgs) {
   const requireGrounded = process.env.PIXIE_REQUIRE_GROUNDED_ANSWER === "1" || program?.requireGroundedAnswer;
+  if (!result.verification?.sendable) return false;
   if (requireGrounded) {
-    if (!isGroundedAnswer(result)) return false;
     result.answer = stripChannelMentions(result.answer);
   }
 
@@ -817,7 +791,7 @@ async function respond({
       ? buildChatContext(threadContext, context.getUserContext(userId), effectiveQuestion, programId, userId)
       : buildContextPrompt(threadContext);
 
-  const known = lookup.knownAnswer({
+  const known = await lookup.knownAnswer({
     question: effectiveQuestion,
     contextPrompt,
     mode: isAddressed ? ALWAYS : HELP_ONLY,
@@ -931,6 +905,7 @@ async function respond({
       allowWebSearch: isAddressed && kind === "general",
       isPing: isAddressed,
       skipCache: requireGrounded,
+      kind,
     });
   } catch (error: unknown) {
     if (placeholderTimer) {
@@ -982,27 +957,15 @@ async function respond({
 
   result ??= { source: null, answer: "" };
   const cannotTell = result?.unclear === true || result?.answer?.trim()?.toUpperCase() === UNCLEAR_MARKER;
-  const grounded = !cannotTell && (isDeterministicAnswer(result) || isGroundedAnswer(result));
+  const grounded = !cannotTell && result.verification?.sendable === true;
   if (grounded && requireGrounded) result.answer = stripChannelMentions(result.answer);
   const retrievalDetails = retrievalTrace(programId, effectiveQuestion);
-  let groundingDetails: Record<string, unknown> = {
-    verdict: grounded ? "supported" : "unsupported",
-    claims: [],
-    unsupported: [],
-    errors: grounded ? [] : ["answer did not pass the grounding boundary"],
-  };
-  if (result?.groundingVerdict || result?.evidence) {
-    try {
-      groundingDetails = answerVerifier.verify({
-        programId: programId || "",
-        verdict: result.groundingVerdict,
-        evidence: result.evidence,
-        fixtureClaims: (result as any).fixtureClaims,
-      });
-    } catch (error: unknown) {
-      groundingDetails = { verdict: "unsupported", claims: [], unsupported: [], errors: [errorMessage(error)] };
-    }
-  }
+  const groundingDetails: Record<string, unknown> = result.verification
+    ? {
+        verdict: result.verification.claims.length > 0 ? result.verification.verdict : "unsupported",
+        claims: result.verification.claims,
+      }
+    : { verdict: "unsupported", claims: [] };
   trace.set({
     retrievalHit: Boolean(result?.source && result.source.trim().toUpperCase() !== "NONE"),
     groundingPass: grounded,
@@ -1046,7 +1009,16 @@ async function respond({
     classifierError: engaged.error || null,
   });
   appendAnswerTrace("retrieval", { question: effectiveQuestion, sources: retrievalDetails });
-  appendAnswerTrace("grounding", { grounded, ...groundingDetails });
+  const evidence = Array.isArray(result.evidence) ? (result.evidence as ClaimEvidence[]) : [];
+  appendAnswerTrace("selected_evidence", {
+    evidenceIds: evidence.map((item) => String(item.id || "")).filter(Boolean),
+    evidence: evidence.map((item) => ({
+      id: String(item.id || ""),
+      source: String(item.sourceName || ""),
+      heading: String(item.heading || ""),
+    })),
+  });
+  appendAnswerTrace("grounding", groundingDetails);
   appendAnswerTrace("decision", { expectedAction: action, reason: plan.reason });
 
   if (action === "reply") {

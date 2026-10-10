@@ -27,6 +27,7 @@ const lookup = require("../lookup");
 const tickets = require("../tickets");
 const context = require("../context");
 const respond = require("../respond");
+const claimVerifier = require("../claimVerifier");
 
 type TestRecord = Record<string, unknown>;
 type TestMessage = TestRecord & { text?: string; ts?: string };
@@ -75,18 +76,50 @@ const JEV: Record<string, { action: string; intent: string }> = {
   },
 };
 
+const ACME_DOCS =
+  "Restoration Energy is what you earn by restoring pixels. Acme is a YSWS for pixel art games. Fix the notes and resubmit from your dashboard.";
+
+function verifiedAnswer(answer: string | null, source: string | null, programId: string) {
+  if (!answer || !source) {
+    return {
+      answer,
+      source,
+      unclear: true,
+      verification: claimVerifier.verifyAnswerSync({ programId, answer: answer || "", evidence: [] }),
+    };
+  }
+  const evidence = [
+    {
+      id: "acme-docs",
+      programId,
+      sourceName: "Acme Docs",
+      text: ACME_DOCS,
+      authority: "source",
+      kind: "source",
+    },
+  ];
+  return {
+    answer,
+    source,
+    evidence,
+    verification: claimVerifier.verifyAnswerSync({ programId, answer, evidence }),
+  };
+}
+
 function fakeAnswer(question: string, program: { id?: string } | null | undefined) {
   const q = question.toLowerCase();
+  const programId = program?.id || "shared";
   if (q.includes("restoration energy") && program?.id === "acme") {
-    return { answer: "Restoration Energy is what you earn by restoring pixels.", source: "Acme Docs" };
+    return verifiedAnswer("Restoration Energy is what you earn by restoring pixels.", "Acme Docs", programId);
   }
   if (q === "what is acme?" && program?.id === "acme")
-    return { answer: "Acme is a YSWS for pixel art games.", source: "Acme Docs" };
+    return verifiedAnswer("Acme is a YSWS for pixel art games.", "Acme Docs", programId);
   if (q.includes("resubmit") && program?.id === "acme")
-    return { answer: "Fix the notes and resubmit from your dashboard.", source: "Acme Docs" };
-  if (q.includes("pixorpheus")) return { answer: "Me, obviously. Pixorpheus can swim.", source: "NONE" };
-  if (q.includes("cookie")) return { answer: "Cream butter and sugar, add chips, bake at 180C.", source: "NONE" };
-  return { answer: null, source: null, unclear: true };
+    return verifiedAnswer("Fix the notes and resubmit from your dashboard.", "Acme Docs", programId);
+  if (q.includes("pixorpheus")) return verifiedAnswer("Me, obviously. Pixorpheus can swim.", "NONE", programId);
+  if (q.includes("cookie"))
+    return verifiedAnswer("Cream butter and sugar, add chips, bake at 180C.", "NONE", programId);
+  return verifiedAnswer(null, null, programId);
 }
 
 let posts: TestMessage[];
@@ -266,7 +299,7 @@ test("main ambient: 'how do i do this' with a clear thread referent retrieves an
   stub(lookup, "answerOrChat", async (question: string, ctx: string, opts: { program?: { id?: string } }) => {
     answerCalls.push({ question, program: opts.program?.id });
     return /restoration energy/i.test(ctx)
-      ? { answer: "Restore pixels in the editor to earn it.", source: "Acme Docs" }
+      ? verifiedAnswer("Restore pixels in the editor to earn it.", "Acme Docs", opts.program?.id || "acme")
       : { unclear: true };
   });
   context.addToThread("9000.000", "user", "what is restoration energy?", "U1", "C_ACME_MAIN");
@@ -389,7 +422,7 @@ test("addressed: classifier outage still answers, docs or not", async () => {
 });
 
 test("addressed: 'who are you' needs no classifier call", async () => {
-  stub(lookup, "answerOrChat", async () => ({ answer: "I'm Pixie!", source: "NONE" }));
+  stub(lookup, "answerOrChat", async () => verifiedAnswer("I'm Pixie!", "NONE", "acme"));
   expect(await send({ channel: "C_ACME_MAIN", text: "who are you?", addressed: true })).toBe(true);
   expect(jevCalls).toHaveLength(0);
 });

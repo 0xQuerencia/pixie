@@ -71,6 +71,35 @@ export interface ProgramSource {
   [key: string]: unknown;
 }
 
+export interface ClaimEvidence {
+  id: string;
+  programId?: string | null;
+  program_id?: string | null;
+  sourceName?: string | null;
+  heading?: string | null;
+  text: string;
+  authority?: string | null;
+  kind?: string | null;
+  status?: string | null;
+  approved?: boolean;
+  selected?: boolean;
+  [key: string]: unknown;
+}
+
+export interface VerifiedClaim {
+  claim: string;
+  supported: boolean;
+  evidenceIds: string[];
+  reason: string;
+}
+
+export interface AnswerVerification {
+  verdict: "supported" | "unsupported";
+  sendable: boolean;
+  claims: VerifiedClaim[];
+  errors: string[];
+}
+
 export type TicketStatus =
   "open" | "claimed" | "waiting_for_helper" | "waiting_for_user" | "resolved" | "closed" | (string & {});
 

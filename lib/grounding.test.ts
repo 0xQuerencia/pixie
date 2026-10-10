@@ -60,6 +60,7 @@ test("allows only explicitly listed fixture-supported claims", () => {
     verdict: supported,
     programId: "build-grant",
     fixtureClaims: [supported.claims[0].claim],
+    allowFixtures: true,
   });
   assert.equal(result.supported, true);
   const notExplicit = grounding.validateClaimSupport({
@@ -78,7 +79,11 @@ test("uses an injected parser without calling a live model", () => {
       return { ...supported, ok: true };
     },
   });
-  const result = validator.validate({ programId: "build-grant", fixtureClaims: [supported.claims[0].claim] });
+  const result = validator.validate({
+    programId: "build-grant",
+    fixtureClaims: [supported.claims[0].claim],
+    allowFixtures: true,
+  });
   assert.equal(result.supported, true);
   assert.equal(calls, 1);
 });

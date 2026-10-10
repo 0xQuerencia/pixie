@@ -17,12 +17,17 @@ interface EvidenceRecord extends JsonRecord {
   program_id?: unknown;
   supportsClaims?: unknown;
   supportedClaims?: unknown;
+  kind?: unknown;
+  authority?: unknown;
+  status?: unknown;
+  approved?: unknown;
 }
 interface ValidateOptions {
   verdict?: unknown;
   evidence?: EvidenceRecord[];
   programId?: string;
   fixtureClaims?: unknown[];
+  allowFixtures?: boolean;
   parse?: (raw: unknown) => ParsedVerdict;
 }
 
@@ -115,11 +120,27 @@ function evidenceProgramId(evidence: EvidenceRecord | undefined) {
   return asString(evidence && (evidence.programId || evidence.program_id));
 }
 
+function evidenceAllowed(evidence: EvidenceRecord | undefined, programId: string) {
+  if (!evidence || evidenceProgramId(evidence) !== programId) return false;
+  const status = asString(evidence.status).toLowerCase();
+  if (["candidate", "pending", "unapproved", "rejected", "superseded"].includes(status)) return false;
+  if (evidence.approved === false) return false;
+  const kind = asString(evidence.kind).toLowerCase();
+  const authority = asString(evidence.authority).toLowerCase();
+  if (kind && !["source", "learned"].includes(kind)) return false;
+  if (authority && !["source", "learned"].includes(authority)) return false;
+  if (kind === "learned" || authority === "learned") {
+    if (asString(evidence.status).toLowerCase() !== "approved" || evidence.approved !== true) return false;
+  }
+  return Boolean(asString(evidence.id));
+}
+
 function validateClaimSupport({
   verdict,
   evidence = [],
   programId,
   fixtureClaims = [],
+  allowFixtures = false,
   parse = parseGroundingVerdict,
 }: ValidateOptions = {}) {
   if (typeof parse !== "function")
@@ -144,6 +165,7 @@ function validateClaimSupport({
       claims: parsed.claims.map((claim) => ({
         claim: claim.claim,
         supported: false,
+        evidenceIds: claim.evidenceIds,
         reason: `top-level verdict is ${parsed.verdict}`,
       })),
       errors: [`top-level verdict ${parsed.verdict} is not sendable`],
@@ -151,12 +173,12 @@ function validateClaimSupport({
   }
 
   const byId = new Map(evidence.map((item) => [asString(item && item.id), item]));
-  const fixtures = new Set(fixtureClaims.map(claimKey));
+  const fixtures = allowFixtures ? new Set(fixtureClaims.map(claimKey)) : new Set<string>();
   const results = parsed.claims.map((claim) => {
     const explicitFixture = fixtures.has(claimKey(claim.claim));
     const validEvidence = claim.evidenceIds.every((id) => {
       const item = byId.get(id);
-      if (!item || evidenceProgramId(item) !== programId) return false;
+      if (!evidenceAllowed(item, programId)) return false;
       const supportedClaims = item.supportsClaims || item.supportedClaims || [];
       return (
         Array.isArray(supportedClaims) &&
@@ -164,7 +186,16 @@ function validateClaimSupport({
       );
     });
     const supported = claim.supported && (explicitFixture || (claim.evidenceIds.length > 0 && validEvidence));
-    return { claim: claim.claim, supported, reason: supported ? "explicit evidence" : "no exact same-program support" };
+    return {
+      claim: claim.claim,
+      supported,
+      evidenceIds: supported && !explicitFixture ? claim.evidenceIds : [],
+      reason: supported
+        ? explicitFixture
+          ? "explicit fixture claim"
+          : "explicit evidence"
+        : "no exact same-program support",
+    };
   });
   const supported = parsed.verdict === "supported" && results.length > 0 && results.every((claim) => claim.supported);
   return { ok: true, supported, verdict: supported ? "supported" : "unsupported", claims: results, errors: [] };

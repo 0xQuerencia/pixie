@@ -689,6 +689,7 @@ test("internalTestQuestion probes retrieval+grounding with no Slack or ticket si
     programChannels: [],
   });
   const ticketsBefore = db.handle().query("SELECT COUNT(*) as count FROM tickets").get().count;
+  const cacheBefore = db.handle().query("SELECT COUNT(*) as count FROM answer_cache").get().count;
 
   const engagementMod = require("../pipeline/engagement");
   const origClassify = engagementMod.classify;
@@ -721,6 +722,8 @@ test("internalTestQuestion probes retrieval+grounding with no Slack or ticket si
   }
   const ticketsAfter = db.handle().query("SELECT COUNT(*) as count FROM tickets").get().count;
   assert.equal(ticketsAfter, ticketsBefore, "the probe must never create tickets");
+  const cacheAfter = db.handle().query("SELECT COUNT(*) as count FROM answer_cache").get().count;
+  assert.equal(cacheAfter, cacheBefore, "the probe must never write answer_cache");
   assert.equal((await api.internalTestQuestion("nope-missing-prog", { question: "hi" })).error, "unknown program");
   assert.match((await api.internalTestQuestion("dash-probe", { question: "  " })).error, /question required/);
 });
