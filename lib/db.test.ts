@@ -40,6 +40,70 @@ test("user topics are capped at the most recent N", () => {
   assert.equal(db.getTopics("U2").length, db.MAX_USER_TOPICS);
 });
 
+test("user topics keep old rows readable and scope new rows by program", () => {
+  db.handle().query("DELETE FROM user_topics").run();
+  db.recordUserTopic("U-topic-scope", "legacy topic", true);
+  db.recordUserTopic("U-topic-scope", "same topic", true, "program-a");
+  db.recordUserTopic("U-topic-scope", "same topic", false, "program-b");
+
+  assert.deepEqual(
+    db.userTopics("U-topic-scope", "program-a").map((row: TestAny) => [row.topic, row.program_id]),
+    [["same topic", "program-a"]],
+  );
+  assert.deepEqual(
+    db.userTopics("U-topic-scope", "program-b").map((row: TestAny) => [row.topic, row.program_id]),
+    [["same topic", "program-b"]],
+  );
+  assert.equal(
+    db.userTopics("U-topic-scope").some((row: TestAny) => row.topic === "legacy topic" && row.program_id === null),
+    true,
+  );
+});
+
+test("legacy user topic tables gain program scope without losing old rows", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pixie-db-topics-"));
+  const filename = path.join(directory, "test.db");
+  const { Database } = require("bun:sqlite");
+
+  try {
+    db.close();
+    db.ensureSchema(filename);
+    const legacy = new Database(filename);
+    legacy.exec("DROP TABLE user_topics");
+    legacy.exec(`
+      CREATE TABLE user_topics (
+        user_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        was_helpful INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, topic)
+      )
+    `);
+    legacy
+      .query("INSERT INTO user_topics (user_id, topic, was_helpful, created_at) VALUES (?, ?, ?, ?)")
+      .run("U-old-topic", "old topic", 1, Date.now());
+    legacy.query("DELETE FROM schema_data_migrations WHERE version = ?").run("user_topics_scope_v1");
+    legacy.close();
+
+    db.open(filename);
+    const columns = db.handle().query("PRAGMA table_info(user_topics)").all();
+    assert.ok(columns.some((column: TestAny) => column.name === "program_id"));
+    assert.deepEqual(
+      db.userTopics("U-old-topic").map((row: TestAny) => [row.topic, row.program_id]),
+      [["old topic", null]],
+    );
+    db.recordUserTopic("U-old-topic", "old topic", true, "new-program");
+    assert.deepEqual(
+      db.userTopics("U-old-topic", "new-program").map((row: TestAny) => [row.topic, row.program_id]),
+      [["old topic", "new-program"]],
+    );
+  } finally {
+    db.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+    db.open(":memory:");
+  }
+});
+
 test("answer cache round-trips and misses on an unknown key", () => {
   cache.putCachedAnswer("hash-a", "how do i join", { source: "Acme FAQ", answer: "just sign up" });
 
@@ -225,6 +289,123 @@ test("answer cache survives a normal reopen and clearCache remains explicit", ()
     fs.rmSync(directory, { recursive: true, force: true });
     db.open(":memory:");
   }
+});
+
+test("legacy auto-approved facts are quarantined once and clear the answer cache", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pixie-db-quarantine-"));
+  const filename = path.join(directory, "test.db");
+  const { Database } = require("bun:sqlite");
+  const legacyId = 9001;
+
+  try {
+    db.close();
+    db.ensureSchema(filename);
+    const legacy = new Database(filename);
+    legacy
+      .query(
+        `INSERT INTO learned_facts
+          (id, question, answer, author_id, status, source_ts, channel, program_id, category, ticket_id, resolver_id, verified_at, support_count, last_supported_at, auto_learned, created_at)
+         VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      )
+      .run(
+        legacyId,
+        "legacy auto question",
+        "legacy auto answer",
+        "U-legacy",
+        "legacy-source",
+        "C-legacy",
+        "legacy-program",
+        "legacy-category",
+        77,
+        "U-resolver",
+        123,
+        4,
+        456,
+        Date.now(),
+      );
+    legacy
+      .query(
+        `INSERT INTO answer_cache (question_hash, question, source, answer, created_at, ask_count, last_asked_at, refreshed_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      )
+      .run("legacy-cache", "legacy cached question", "Legacy", "stale answer", Date.now(), Date.now(), Date.now());
+    legacy.query("DELETE FROM schema_data_migrations WHERE version = ?").run("legacy_auto_learned_v1");
+    legacy.close();
+
+    db.open(filename);
+    const row = db.getLearnedFactById(legacyId);
+    assert.equal(row.status, "candidate");
+    assert.equal(row.verified_at, null);
+    assert.equal(row.auto_learned, 1);
+    assert.deepEqual(
+      [row.id, row.program_id, row.ticket_id, row.resolver_id, row.question, row.answer],
+      [legacyId, "legacy-program", 77, "U-resolver", "legacy auto question", "legacy auto answer"],
+    );
+    assert.equal(
+      db.approvedFacts(50, "legacy-program").some((fact: TestAny) => fact.question === "legacy auto question"),
+      false,
+    );
+    assert.equal(
+      db.listReviewableLearnedFacts("legacy-program").some((fact: TestAny) => fact.id === legacyId),
+      true,
+    );
+    assert.equal(db.handle().query("SELECT 1 FROM answer_cache WHERE question_hash = ?").get("legacy-cache"), null);
+
+    db.close();
+    db.open(filename);
+    assert.equal(db.getLearnedFactById(legacyId).status, "candidate");
+    assert.equal(
+      db
+        .handle()
+        .query("SELECT COUNT(*) AS n FROM schema_data_migrations WHERE version = ?")
+        .get("legacy_auto_learned_v1").n,
+      1,
+    );
+  } finally {
+    db.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+    db.open(":memory:");
+  }
+});
+
+test("trusted learned reads exclude auto-learned rows and superseded review rows", () => {
+  db.handle().query("DELETE FROM learned_facts").run();
+  const auto = db.addLearnedFact({
+    question: "legacy trusted read question",
+    answer: "must wait",
+    status: "approved",
+    programId: "trusted-read-program",
+    autoLearned: true,
+    sourceTs: "trusted-read-auto",
+  });
+  const human = db.addLearnedFact({
+    question: "human trusted read question",
+    answer: "safe answer",
+    status: "approved",
+    programId: "trusted-read-program",
+    sourceTs: "trusted-read-human",
+  });
+  const superseded = db.addLearnedFact({
+    question: "superseded review question",
+    answer: "old answer",
+    status: "candidate",
+    programId: "trusted-read-program",
+    sourceTs: "trusted-read-superseded",
+  });
+  db.handle().query("UPDATE learned_facts SET superseded_by = ? WHERE id = ?").run(human, superseded);
+
+  assert.deepEqual(
+    db.approvedFacts(50, "trusted-read-program").map((fact: TestAny) => fact.question),
+    ["human trusted read question"],
+  );
+  assert.equal(
+    db.listReviewableLearnedFacts("trusted-read-program").some((fact: TestAny) => fact.id === auto),
+    true,
+  );
+  assert.equal(
+    db.listReviewableLearnedFacts("trusted-read-program").some((fact: TestAny) => fact.id === superseded),
+    false,
+  );
 });
 
 test("source text survives a restart", () => {

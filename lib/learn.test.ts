@@ -278,7 +278,7 @@ test("teach stores APPROVED and captureFromThread defaults to PENDING", () => {
   learn.forget(id2);
 });
 
-test("captureFromThread with autoApprove stores APPROVED", () => {
+test("captureFromThread with autoApprove stays pending for compatibility", () => {
   const id = learn.captureFromThread({
     question: "char auto q",
     answer: "char auto answer here",
@@ -288,9 +288,85 @@ test("captureFromThread with autoApprove stores APPROVED", () => {
     autoApprove: true,
   });
   assert.ok(id);
-  assert.equal(db.getLearnedFactById(id).status, "approved");
-  assert.match(learn.corpusSection(), /char auto q/);
+  assert.equal(db.getLearnedFactById(id).status, "pending");
+  assert.doesNotMatch(learn.corpusSection(), /char auto q/);
   learn.forget(id);
+});
+
+test("approval only accepts candidate or pending facts and clears auto-learning", () => {
+  const rejected = db.addLearnedFact({
+    question: "char rejected approval guard",
+    answer: "never trusted",
+    status: "rejected",
+    sourceTs: "char-rejected-approval-guard",
+  });
+  const superseded = db.addLearnedFact({
+    question: "char superseded approval guard",
+    answer: "never trusted",
+    status: "superseded",
+    sourceTs: "char-superseded-approval-guard",
+  });
+  const candidate = db.addLearnedFact({
+    question: "char candidate approval guard",
+    answer: "trusted after review",
+    status: "candidate",
+    sourceTs: "char-candidate-approval-guard",
+    autoLearned: true,
+  });
+
+  assert.equal(db.setLearnedStatus(rejected, "approved"), false);
+  assert.equal(db.setLearnedStatus(superseded, "approved"), false);
+  assert.equal(learn.approve(rejected), false);
+  assert.equal(learn.approve(superseded), false);
+  assert.equal(db.getLearnedFactById(rejected).status, "rejected");
+  assert.equal(db.getLearnedFactById(superseded).status, "superseded");
+  assert.equal(learn.approve(candidate), true);
+  assert.equal(db.getLearnedFactById(candidate).status, "approved");
+  assert.equal(db.getLearnedFactById(candidate).auto_learned, 0);
+});
+
+test("approval invalidates the answer cache and learned knowledge map", () => {
+  const cache = require("./cache");
+  const knowledge = require("./knowledge");
+  const programId = "char-cache-approval";
+  const id = db.addLearnedFact({
+    question: "char cache approval question",
+    answer: "char cache approval answer",
+    status: "candidate",
+    programId,
+    sourceTs: "char-cache-approval-source",
+  });
+
+  knowledge.invalidate();
+  knowledge.getCorpus(programId);
+  cache.put("char cache approval lookup", { source: "old", answer: "old answer" }, programId);
+  assert.ok(cache.get("char cache approval lookup", programId));
+
+  assert.equal(learn.approve(id), true);
+  assert.equal(cache.get("char cache approval lookup", programId), null);
+  assert.match(knowledge.getCorpus(programId), /char cache approval answer/);
+});
+
+test("direct trust-state changes invalidate the answer cache and learned knowledge map", () => {
+  const cache = require("./cache");
+  const knowledge = require("./knowledge");
+  const programId = "char-cache-status";
+  const id = db.addLearnedFact({
+    question: "char cache status question",
+    answer: "char cache status answer",
+    status: "approved",
+    programId,
+    sourceTs: "char-cache-status-source",
+  });
+
+  knowledge.invalidate();
+  assert.match(knowledge.getCorpus(programId), /char cache status answer/);
+  cache.put("char cache status lookup", { source: "old", answer: "old answer" }, programId);
+  assert.ok(cache.get("char cache status lookup", programId));
+
+  assert.equal(db.setLearnedStatus(id, "rejected"), true);
+  assert.equal(cache.get("char cache status lookup", programId), null);
+  assert.doesNotMatch(knowledge.getCorpus(programId), /char cache status answer/);
 });
 
 test("captureFromReply is hard-disabled and always returns null", async () => {

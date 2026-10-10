@@ -126,6 +126,41 @@ test("approval enters the corpus with verification; rejection excludes", async (
   assert.ok(!factsAfter.includes("bad idea"));
 });
 
+test("legacy auto-learned facts stay in the review queue until explicit approval", () => {
+  const id = db
+    .handle()
+    .query(
+      "INSERT INTO learned_facts (question, answer, status, source_ts, program_id, verified_at, auto_learned, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+    )
+    .run(
+      "legacy resolution question",
+      "legacy resolution answer",
+      "approved",
+      "legacy-resolution-source",
+      "rm-hwy",
+      Date.now(),
+      Date.now(),
+    ).lastInsertRowid;
+
+  assert.equal(
+    memory.listCandidates("rm-hwy").some((row) => row.id === id),
+    true,
+  );
+  assert.equal(
+    db.approvedFacts(200, "rm-hwy").some((row) => row.question === "legacy resolution question"),
+    false,
+  );
+
+  db.handle().query("UPDATE learned_facts SET status = ?, verified_at = NULL WHERE id = ?").run("candidate", id);
+  const approval = memory.approveCandidate({ id, actorId: "U-helper" });
+  assert.equal(approval.ok, true);
+  assert.equal(db.handle().query("SELECT auto_learned FROM learned_facts WHERE id = ?").get(id).auto_learned, 0);
+  assert.equal(
+    db.approvedFacts(200, "rm-hwy").some((row) => row.question === "legacy resolution question"),
+    true,
+  );
+});
+
 test("candidate API is tenant- and actor-gated", async () => {
   const stranger = await api.internalKnowledgePropose("rm-hwy", { actorId: "U-stranger", ticketId: 1 });
   assert.match(stranger.error, /not a helper/);

@@ -33,6 +33,7 @@ export interface Program {
   autoAssign: boolean;
   helperPing: boolean;
   categories: Record<string, unknown> | null;
+  // Compatibility only; both values stay review-safe.
   learning: "auto" | "review";
   ticketVisibility: TicketVisibility;
   shadowMode: boolean;
