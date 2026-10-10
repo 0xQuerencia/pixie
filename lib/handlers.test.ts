@@ -7,6 +7,7 @@ const macros = require("./macros");
 const programs = require("./programs");
 const { config } = require("./config");
 const handlers = require("./handlers");
+const reply = require("./reply");
 const context = require("./context");
 const respond = require("./respond");
 const learn = require("./learn");
@@ -620,6 +621,43 @@ test("onReactionAdded deletes a threaded reply using item_user, with no history 
   assert.equal(deleted[0].ts, "900.1");
 });
 
+test("onReactionAdded stops the spinner before deleting a placeholder", async () => {
+  let updates = 0;
+  const deleted: any[] = [];
+  const client = {
+    chat: {
+      postMessage: async () => ({ ts: "reaction-spinner" }),
+      update: async () => {
+        updates++;
+        return {};
+      },
+      delete: async (args: any) => {
+        deleted.push(args);
+        return { ok: true };
+      },
+    },
+  };
+
+  await reply.postThinking(client, "C0DEL", "reaction-spinner-thread");
+  await new Promise<void>((resolve) => setTimeout(resolve, reply.STREAMING_WORD_INTERVAL_MS + 40));
+  assert.equal(updates, 1);
+
+  await handlers.onReactionAdded({
+    event: {
+      reaction: "x",
+      user: "U-someone",
+      item: { type: "message", channel: "C0DEL", ts: "reaction-spinner" },
+      item_user: "U0PIXIE",
+    },
+    client,
+  });
+  const updatesAfterDelete = updates;
+  await new Promise<void>((resolve) => setTimeout(resolve, reply.STREAMING_WORD_INTERVAL_MS + 40));
+
+  assert.equal(deleted.length, 1);
+  assert.equal(updates, updatesAfterDelete);
+});
+
 test("a broadcast thread reply routes once like a normal thread reply", async () => {
   context.addToThread("900.1", "assistant", "here's the answer", null, HELP_CHANNEL);
   const calls = await routeHelpMessage({
@@ -898,6 +936,72 @@ test("DM image is rate limited before vision and emits a metric", async () => {
   assert.equal(posted.length, 1);
   assert.match(posted[0].text, /slow down/);
   assert.deepEqual(metrics[0], ["rate_limited", null, "limit", null]);
+});
+
+test("duplicate rate-limited DM delivery posts one notice and records one metric", async () => {
+  const savedCheck = rateLimit.check;
+  const savedMetric = db.recordMetric;
+  const posts: any[] = [];
+  const metrics: any[] = [];
+  rateLimit.check = () => ({ allowed: false, reason: "limit" });
+  db.recordMetric = (...args: any[]) => metrics.push(args);
+  const event = {
+    ts: "dm-rate-duplicate",
+    channel: "D0RATE-DUP",
+    channel_type: "im",
+    user: "U-RATE-DUP",
+    text: "how do I submit this",
+  };
+  const client = { chat: { postMessage: async (args: any) => posts.push(args) } };
+
+  try {
+    await handlers.onMessage({ event, client });
+    await handlers.onMessage({ event, client });
+  } finally {
+    rateLimit.check = savedCheck;
+    db.recordMetric = savedMetric;
+  }
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].text, "woah slow down a sec — gimme a minute to catch up :pls:");
+  assert.equal(metrics.length, 1);
+  assert.deepEqual(metrics[0], ["rate_limited", null, "limit", "shared"]);
+});
+
+test("rate-limit notice failure does not reject the DM handler", async () => {
+  const savedCheck = rateLimit.check;
+  const savedMetric = db.recordMetric;
+  const metrics: any[] = [];
+  rateLimit.check = () => ({ allowed: false, reason: "limit" });
+  db.recordMetric = (...args: any[]) => metrics.push(args);
+  const client = {
+    chat: {
+      postMessage: async () => {
+        throw Object.assign(new Error("not_in_channel"), { code: "not_in_channel" });
+      },
+    },
+  };
+
+  try {
+    await assert.doesNotReject(() =>
+      handlers.onMessage({
+        event: {
+          ts: "dm-rate-failure",
+          channel: "D0RATE-FAIL",
+          channel_type: "im",
+          user: "U-RATE-FAIL",
+          text: "how do I submit this",
+        },
+        client,
+      }),
+    );
+  } finally {
+    rateLimit.check = savedCheck;
+    db.recordMetric = savedMetric;
+  }
+
+  assert.ok(metrics.length >= 1);
+  assert.deepEqual(metrics[0], ["rate_limited", null, "limit", "shared"]);
 });
 
 test("DM teach and sum are rate limited before their model paths", async () => {
