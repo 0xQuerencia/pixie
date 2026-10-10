@@ -35,4 +35,25 @@ test("handoff packet explains the question, attempted steps, and escalation reas
   assert.doesNotMatch(packet, /chain of thought/i);
 });
 
+test("attempted steps export is answer-only context", () => {
+  supportMemory.forgetProgramUser("handoff-answer-only", "U-handoff");
+  supportMemory.remember({
+    programId: "handoff-answer-only",
+    userId: "U-handoff",
+    kind: "problem",
+    value: "The portal still shows an error",
+  });
+  supportMemory.remember({
+    programId: "handoff-answer-only",
+    userId: "U-handoff",
+    kind: "attempt",
+    value: "Cleared cookies",
+  });
+
+  const block = handoffContext.formatAttemptedSteps("handoff-answer-only", "U-handoff");
+  assert.match(block, /CONTEXT-ONLY/);
+  assert.match(block, /Steps already tried: Cleared cookies/);
+  assert.doesNotMatch(block, /source|id\b/i);
+});
+
 export {};
