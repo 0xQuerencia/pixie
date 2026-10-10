@@ -190,15 +190,26 @@ function ticketDetailScoped(programId: string, ticketId: number) {
   if (!ticket || ticket.program_id !== programId) return { error: "ticket not found" };
   const resolutionSummary = ticket.resolution_summary || null;
   let traces: unknown[] = [];
+  let tracesError = false;
   try {
-    traces = require("../pipeline/traceStore").forTicket(programId, ticket.id);
-  } catch (_) {}
+    const traceStore = require("../pipeline/traceStore");
+    const rows = [
+      ...traceStore.forTicket(programId, ticket.id),
+      ...traceStore.forThread(programId, ticket.thread_ts),
+    ] as Array<{ id: number; createdAt: number }>;
+    traces = [...new Map(rows.map((row) => [row.id, row])).values()].sort(
+      (a, b) => a.createdAt - b.createdAt || a.id - b.id,
+    );
+  } catch (_) {
+    tracesError = true;
+  }
   return {
     ticket: { ...ticket, resolutionSummary },
     resolutionSummary,
     events: db.listTicketEvents(ticket.id),
     notes: db.listTicketNotes(ticket.id),
     traces,
+    ...(tracesError ? { tracesError: true } : {}),
   };
 }
 

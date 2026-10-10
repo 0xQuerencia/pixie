@@ -1,4 +1,5 @@
 const db = require("../db");
+const retention = require("../retention");
 
 interface TraceInput {
   programId: string;
@@ -10,9 +11,40 @@ interface TraceInput {
   ttlMs?: number;
 }
 
-const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+interface TraceRow {
+  id: number;
+  ticket_id: number | null;
+  stage: string;
+  payload_json: string;
+  created_at: number;
+  request_id: string | null;
+}
+
+const DAY_MS = 86400000;
+const MIN_TTL_MS = 60_000;
+const DEFAULT_TTL_MS = retention.DEFAULTS.tracesDays * DAY_MS;
 const MAX_JSON_CHARS = 12000;
-const SECRET_KEY = /token|secret|authorization|cookie|api[_-]?key|password|prompt/i;
+const MAX_TEXT_CHARS = 1200;
+const MAX_LIST_ITEMS = 30;
+const KNOWN_STAGES = new Set([
+  "engagement",
+  "intent",
+  "retrieval",
+  "selected_evidence",
+  "grounding",
+  "decision",
+  "handoff",
+  "final_action",
+  "final",
+]);
+const SECRET_VALUE_PATTERNS = [
+  /\bBearer\s+[^\s,;]+/gi,
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+  /\bxox[a-z](?:-[A-Za-z0-9-]+|[A-Za-z0-9_-]*)/gi,
+  /\bsk-[A-Za-z0-9][A-Za-z0-9_-]*/gi,
+  /\b(?:cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi,
+  /\b(?:authorization|proxy-authorization|token|session|connect\.sid|csrf|xsrf|access_token|refresh_token|api[_-]?key|secret|password)\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi,
+];
 let ready = false;
 
 function ensureSchema(): void {
@@ -37,21 +69,238 @@ function ensureSchema(): void {
   ready = true;
 }
 
-function sanitize(value: unknown, depth = 0): unknown {
-  if (depth > 5) return "[truncated]";
-  if (Array.isArray(value)) return value.slice(0, 30).map((item) => sanitize(item, depth + 1));
-  if (!value || typeof value !== "object") return typeof value === "string" ? value.slice(0, 1200) : value;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function scrubString(value: string): string {
+  return SECRET_VALUE_PATTERNS.reduce((result, pattern) => result.replace(pattern, "[redacted]"), value);
+}
+
+function stringValue(value: unknown, maxLength = MAX_TEXT_CHARS): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return scrubString(value).slice(0, maxLength);
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function stringList(value: unknown, maxItems = MAX_LIST_ITEMS): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .slice(0, maxItems)
+    .map((item) => scrubString(item).slice(0, MAX_TEXT_CHARS));
+}
+
+function putString(
+  out: Record<string, unknown>,
+  input: Record<string, unknown>,
+  key: string,
+  maxLength?: number,
+): void {
+  const value = stringValue(input[key], maxLength);
+  if (value !== undefined) out[key] = value;
+}
+
+function putNumber(out: Record<string, unknown>, input: Record<string, unknown>, key: string): void {
+  const value = numberValue(input[key]);
+  if (value !== undefined) out[key] = value;
+}
+
+function putBoolean(out: Record<string, unknown>, input: Record<string, unknown>, key: string): void {
+  const value = booleanValue(input[key]);
+  if (value !== undefined) out[key] = value;
+}
+
+function putStrings(
+  out: Record<string, unknown>,
+  input: Record<string, unknown>,
+  key: string,
+  maxItems?: number,
+): void {
+  if (!Array.isArray(input[key])) return;
+  out[key] = stringList(input[key], maxItems);
+}
+
+function normalizedScores(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
   const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>).slice(0, 60)) {
-    out[key] = SECRET_KEY.test(key) ? "[redacted]" : sanitize(child, depth + 1);
-  }
+  for (const key of ["lexical", "semantic", "total", "score"]) putNumber(out, value, key);
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function normalizedRetrievalItem(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const out: Record<string, unknown> = {};
+  for (const key of ["id", "evidenceId", "source", "heading"]) putString(out, value, key, 240);
+  for (const key of ["lexical", "semantic", "total", "score", "rank"]) putNumber(out, value, key);
+  const scores = normalizedScores(value.scores);
+  if (scores) out.scores = scores;
   return out;
+}
+
+function normalizedRetrievalList(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 12)
+    .map(normalizedRetrievalItem)
+    .filter((item) => Object.keys(item).length > 0);
+}
+
+function normalizedEvidenceList(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, 12)
+    .map((item) => {
+      const out = normalizedRetrievalItem(item);
+      if (isRecord(item)) putString(out, item, "label", 240);
+      return out;
+    })
+    .filter((item) => Object.keys(item).length > 0);
+}
+
+function normalizedClaims(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 12).flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const out: Record<string, unknown> = {};
+    putString(out, item, "claim", 600);
+    putBoolean(out, item, "supported");
+    const evidenceIds = Array.isArray(item.evidenceIds) ? item.evidenceIds : item.evidence_ids;
+    if (Array.isArray(evidenceIds)) out.evidenceIds = stringList(evidenceIds, 12);
+    putString(out, item, "reason", 200);
+    return Object.keys(out).length > 0 ? [out] : [];
+  });
+}
+
+function normalizePayload(stage: string, value: unknown): Record<string, unknown> {
+  const input = isRecord(value) ? value : {};
+  const out: Record<string, unknown> = {};
+
+  if (stage === "grounding") {
+    out.verdict = stringValue(input.verdict, 80) || "unknown";
+    out.claims = normalizedClaims(input.claims);
+    return out;
+  }
+
+  if (stage === "engagement") {
+    for (const key of ["role", "intent", "classifier", "classifierError"]) putString(out, input, key, 240);
+    for (const key of ["addressed", "engaged"]) putBoolean(out, input, key);
+    return out;
+  }
+
+  if (stage === "intent") {
+    for (const key of ["intent", "source", "reason", "classifierError"]) putString(out, input, key, 240);
+    putNumber(out, input, "confidence");
+    putBoolean(out, input, "engaged");
+    return out;
+  }
+
+  if (stage === "retrieval") {
+    putString(out, input, "question");
+    for (const key of ["sources", "results"]) {
+      if (Array.isArray(input[key])) out[key] = normalizedRetrievalList(input[key]);
+    }
+    return out;
+  }
+
+  if (stage === "selected_evidence") {
+    const evidenceIds = input.evidenceIds ?? input.selectedEvidenceIds ?? input.ids;
+    if (Array.isArray(evidenceIds)) out.evidenceIds = stringList(evidenceIds, 30);
+    if (Array.isArray(input.evidence)) out.evidence = normalizedEvidenceList(input.evidence);
+    return out;
+  }
+
+  if (stage === "decision") {
+    for (const key of ["expectedAction", "action", "reason"]) putString(out, input, key, 240);
+    putBoolean(out, input, "grounded");
+    return out;
+  }
+
+  if (stage === "handoff") {
+    for (const key of ["reason", "question", "target"]) putString(out, input, key, 400);
+    putStrings(out, input, "sources", 30);
+    return out;
+  }
+
+  if (stage === "final" || stage === "final_action") {
+    for (const key of ["action", "finalAction", "reason"]) putString(out, input, key, 240);
+    return out;
+  }
+
+  return out;
+}
+
+function compact(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > 40 ? value.slice(0, Math.max(20, Math.floor(value.length * 0.65))) : value;
+  }
+  if (Array.isArray(value)) {
+    const items = value.length > 1 ? value.slice(0, Math.max(1, Math.ceil(value.length * 0.65))) : value;
+    return items.map((item) => compact(item));
+  }
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, compact(child)]));
+}
+
+function boundedPayload(stage: string, payload: Record<string, unknown>): string {
+  let candidate: unknown = payload;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const serialized = JSON.stringify(candidate);
+    if (serialized.length <= MAX_JSON_CHARS) return serialized;
+    const next = compact(candidate);
+    if (JSON.stringify(next) === serialized) break;
+    candidate = next;
+  }
+  const fallback = stage === "grounding" ? { verdict: "unknown", claims: [] } : {};
+  const serialized = JSON.stringify(candidate);
+  return serialized.length <= MAX_JSON_CHARS ? serialized : JSON.stringify(fallback);
+}
+
+function canonicalStage(value: unknown): string {
+  const stage = typeof value === "string" ? value.slice(0, 80) : "unknown";
+  return KNOWN_STAGES.has(stage) ? stage : "unknown";
+}
+
+function sanitize(value: unknown, stage = "unknown"): unknown {
+  return normalizePayload(canonicalStage(stage), value);
+}
+
+function parsePayload(row: TraceRow): Record<string, unknown> {
+  try {
+    const payload = JSON.parse(row.payload_json);
+    if (!isRecord(payload)) throw new Error("stored trace payload is not an object");
+    return normalizePayload(canonicalStage(row.stage), payload);
+  } catch (error) {
+    throw new Error(`stored trace payload is invalid: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function readRows(rows: TraceRow[]) {
+  return rows.map((row) => ({
+    id: row.id,
+    ticketId: row.ticket_id,
+    stage: row.stage,
+    payload: parsePayload(row),
+    createdAt: row.created_at,
+    requestId: row.request_id,
+  }));
 }
 
 function append(input: TraceInput): number {
   ensureSchema();
   const now = Date.now();
-  const payload = JSON.stringify(sanitize(input.payload || {})).slice(0, MAX_JSON_CHARS);
+  const stage = canonicalStage(input.stage);
+  const payload = boundedPayload(stage, normalizePayload(stage, input.payload));
+  const requestedTtl = Number(input.ttlMs);
+  const policyTtl = Number(retention.policyFor(input.programId).tracesDays) * DAY_MS;
+  const ttl = Number.isFinite(requestedTtl) && requestedTtl > 0 ? requestedTtl : policyTtl;
   const result = db
     .handle()
     .query(
@@ -61,41 +310,52 @@ function append(input: TraceInput): number {
     )
     .run(
       input.programId,
-      input.ticketId || null,
-      input.threadTs || null,
-      input.requestId || null,
-      String(input.stage || "unknown").slice(0, 80),
+      input.ticketId ?? null,
+      input.threadTs ?? null,
+      input.requestId ?? null,
+      stage,
       payload,
       now,
-      now + Math.max(60_000, Number(input.ttlMs) || DEFAULT_TTL_MS),
+      now + Math.max(MIN_TTL_MS, ttl),
     );
   return Number(result.lastInsertRowid);
 }
 
 function forTicket(programId: string, ticketId: number) {
   ensureSchema();
-  db.handle().query("DELETE FROM answer_traces WHERE expires_at <= ?").run(Date.now());
-  return db
-    .handle()
-    .query(
-      `SELECT id,stage,payload_json,created_at,request_id
-       FROM answer_traces WHERE program_id = ? AND ticket_id = ?
-       ORDER BY created_at ASC, id ASC LIMIT 300`,
-    )
-    .all(programId, ticketId)
-    .map((row: { id: number; stage: string; payload_json: string; created_at: number; request_id: string | null }) => ({
-      id: row.id,
-      stage: row.stage,
-      payload: (() => {
-        try {
-          return JSON.parse(row.payload_json);
-        } catch {
-          return {};
-        }
-      })(),
-      createdAt: row.created_at,
-      requestId: row.request_id,
-    }));
+  return readRows(
+    db
+      .handle()
+      .query(
+        `SELECT id,ticket_id,stage,payload_json,created_at,request_id
+         FROM answer_traces WHERE program_id = ? AND ticket_id = ? AND expires_at > ?
+         ORDER BY created_at ASC, id ASC LIMIT 300`,
+      )
+      .all(programId, ticketId, Date.now()) as TraceRow[],
+  );
 }
 
-export = { append, forTicket, ensureSchema, sanitize, DEFAULT_TTL_MS };
+function forThread(programId: string, threadTs: string) {
+  ensureSchema();
+  return readRows(
+    db
+      .handle()
+      .query(
+        `SELECT id,ticket_id,stage,payload_json,created_at,request_id
+         FROM answer_traces WHERE program_id = ? AND thread_ts = ? AND expires_at > ?
+         ORDER BY created_at ASC, id ASC LIMIT 300`,
+      )
+      .all(programId, threadTs, Date.now()) as TraceRow[],
+  );
+}
+
+function sweepExpired(programId?: string, now = Date.now()): number {
+  ensureSchema();
+  if (programId !== undefined) {
+    return db.handle().query("DELETE FROM answer_traces WHERE program_id = ? AND expires_at <= ?").run(programId, now)
+      .changes;
+  }
+  return db.handle().query("DELETE FROM answer_traces WHERE expires_at <= ?").run(now).changes;
+}
+
+export = { append, forTicket, forThread, sweepExpired, ensureSchema, sanitize, DEFAULT_TTL_MS };

@@ -487,6 +487,8 @@ test("serialization shapes carry no secrets — programs/health/detail/retention
   });
   const detail = api.ticketDetail(tid);
   assert.ok(detail.ticket && Array.isArray(detail.events) && Array.isArray(detail.notes));
+  assert.ok(api.ticketDetail(tid, "char-shape").ticket);
+  assert.equal(api.ticketDetail(tid, "other-shape").error, "program mismatch");
   assert.equal("token" in detail, false);
   const prev = api.internalRetentionPreview("char-shape");
   assert.ok(typeof prev.tickets === "number" && typeof prev.ticketEvents === "number");

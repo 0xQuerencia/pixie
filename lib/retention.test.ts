@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const db = require("./db");
 const programs = require("./programs");
 const retention = require("./retention");
+const traceStore = require("./pipeline/traceStore");
 
 before(() => {
   db.close();
@@ -198,5 +199,39 @@ test("retention sweep deletes per-table, tenant-scoped, spares open/audit/knowle
 
   assert.ok(db.handle().query("SELECT * FROM audit_events WHERE id = ?").get(auditId), "audit never deleted");
   assert.ok(db.getLearnedFactById(factId), "approved knowledge survives its source ticket");
+});
+
+test("retention sweep expires traces using their stored TTL and keeps other programs", () => {
+  db.saveProgram({
+    id: "char-ret-traces",
+    name: "Trace retention",
+    retention: { tracesDays: 2 },
+  });
+  db.saveProgram({ id: "char-ret-traces-other", name: "Other" });
+  programs.invalidate();
+  const expired = traceStore.append({
+    programId: "char-ret-traces",
+    stage: "final_action",
+    payload: { action: "reply" },
+  });
+  const fresh = traceStore.append({
+    programId: "char-ret-traces",
+    stage: "final_action",
+    payload: { action: "silence" },
+  });
+  const other = traceStore.append({
+    programId: "char-ret-traces-other",
+    stage: "final_action",
+    payload: { action: "reply" },
+  });
+  db.handle()
+    .query("UPDATE answer_traces SET expires_at = ? WHERE id = ?")
+    .run(Date.now() - 1, expired);
+
+  const swept = retention.sweepProgram("char-ret-traces", { dryRun: false });
+  assert.equal(swept.deleted, true);
+  assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM answer_traces WHERE id = ?").get(expired).n, 0);
+  assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM answer_traces WHERE id = ?").get(fresh).n, 1);
+  assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM answer_traces WHERE id = ?").get(other).n, 1);
 });
 export {};

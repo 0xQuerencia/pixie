@@ -701,9 +701,11 @@ async function handleApi(req: Request): Promise<Response | null> {
     }
     const ticketRoute = url.pathname.match(/^\/internal\/v1\/tickets\/(\d+)$/);
     if (ticketRoute && method === "GET") {
-      const detail = api.ticketDetail(Number(ticketRoute[1]));
+      const programId = url.searchParams.get("programId");
+      if (!programId) return json({ error: "programId required" }, 400);
+      const detail = api.ticketDetail(Number(ticketRoute[1]), programId);
       if (!detail) return json({ error: "ticket not found" }, 404);
-      if (url.searchParams.get("programId") && url.searchParams.get("programId") !== detail.ticket.program_id) {
+      if (detail.error === "program mismatch") {
         return json({ error: "program mismatch" }, 403);
       }
       return json(detail);
