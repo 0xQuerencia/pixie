@@ -51,10 +51,23 @@ function htmlResponse(html: string, extraHeaders: Record<string, string> = {}): 
   });
 }
 
-async function readJsonBody(req: Request, method: string): Promise<JsonObject> {
+const MAX_INTERNAL_BODY_BYTES = 8_000_000;
+const MAX_PROBE_BODY_BYTES = 20_000;
+
+class BodyTooLargeError extends Error {}
+
+function bodyLimitFor(pathname: string): number {
+  return /\/test-question$/.test(pathname) ? MAX_PROBE_BODY_BYTES : MAX_INTERNAL_BODY_BYTES;
+}
+
+async function readJsonBody(req: Request, method: string, maxBytes = MAX_INTERNAL_BODY_BYTES): Promise<JsonObject> {
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) return {};
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) throw new BodyTooLargeError();
+  const text = await req.text().catch(() => "");
+  if (text.length > maxBytes) throw new BodyTooLargeError();
   try {
-    return (await req.json()) as JsonObject;
+    return JSON.parse(text) as JsonObject;
   } catch (_) {
     return {};
   }
@@ -420,8 +433,7 @@ async function handleApi(req: Request): Promise<Response | null> {
   }
 
   if (url.pathname === "/api/stream" && method === "GET") {
-    const session = auth.requireSession(req);
-    if (!session) return json({ error: "unauthorized" }, 401);
+    if (adminResult.status) return json(adminResult.body, adminResult.status);
     return sseStream(req);
   }
 
@@ -624,7 +636,13 @@ async function handleApi(req: Request): Promise<Response | null> {
   if (url.pathname.startsWith("/internal/v1/")) {
     const gate = api.internalAuth(req);
     if (!gate.ok) return json(gate.body, gate.status);
-    const body = await readJsonBody(req, method);
+    let body: JsonObject;
+    try {
+      body = await readJsonBody(req, method, bodyLimitFor(url.pathname));
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) return json({ error: "request body too large" }, 413);
+      throw err;
+    }
 
     if (url.pathname === "/internal/v1/health" && method === "GET") {
       return json({ ok: true, time: Date.now() });

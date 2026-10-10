@@ -1,5 +1,6 @@
 const db = require("../db");
 const retention = require("../retention");
+const { redactSecrets, redactInternalContent } = require("../redact");
 
 interface TraceInput {
   programId: string;
@@ -37,14 +38,6 @@ const KNOWN_STAGES = new Set([
   "final_action",
   "final",
 ]);
-const SECRET_VALUE_PATTERNS = [
-  /\bBearer\s+[^\s,;]+/gi,
-  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
-  /\bxox[a-z](?:-[A-Za-z0-9-]+|[A-Za-z0-9_-]*)/gi,
-  /\bsk-[A-Za-z0-9][A-Za-z0-9_-]*/gi,
-  /\b(?:cookie|set-cookie)\s*[:=]\s*[^\r\n]+/gi,
-  /\b(?:authorization|proxy-authorization|token|session|connect\.sid|csrf|xsrf|access_token|refresh_token|api[_-]?key|secret|password)\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi,
-];
 let ready = false;
 
 function ensureSchema(): void {
@@ -74,7 +67,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function scrubString(value: string): string {
-  return SECRET_VALUE_PATTERNS.reduce((result, pattern) => result.replace(pattern, "[redacted]"), value);
+  return redactInternalContent(redactSecrets(value));
 }
 
 function stringValue(value: unknown, maxLength = MAX_TEXT_CHARS): string | undefined {
@@ -185,7 +178,9 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
 
   if (stage === "grounding") {
     out.verdict = stringValue(input.verdict, 80) || "unknown";
-    out.claims = normalizedClaims(input.claims);
+    const claims = normalizedClaims(input.claims);
+    const legacy = Array.isArray(input.unsupported) ? normalizedClaims(input.unsupported) : [];
+    out.claims = claims.length ? claims : legacy;
     return out;
   }
 

@@ -152,3 +152,39 @@ test("append uses the program traces retention policy", () => {
 });
 
 export {};
+
+test("json-shaped credentials and reasoning phrases are scrubbed from trace text", () => {
+  traceStore.append({
+    programId: "trace-json-secret",
+    threadTs: "trace-json-thread",
+    stage: "retrieval",
+    payload: { question: 'help {"password":"hunter-two"} chain of thought says no' },
+  });
+  const [row] = traceStore.forThread("trace-json-secret", "trace-json-thread");
+  assert.doesNotMatch(JSON.stringify(row.payload), /hunter-two|chain of thought/i);
+});
+
+test("legacy grounding rows keep their unsupported claims on read", () => {
+  db.handle()
+    .query(
+      `INSERT INTO answer_traces (program_id, ticket_id, thread_ts, request_id, stage, payload_json, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      "trace-legacy",
+      901,
+      "trace-legacy-thread",
+      "r1",
+      "grounding",
+      JSON.stringify({
+        verdict: "unsupported",
+        claims: [],
+        unsupported: [{ claim: "old unsupported claim", supported: false, reason: "verifier failed closed" }],
+      }),
+      Date.now() - 10,
+      Date.now() + 60_000,
+    );
+  const [row] = traceStore.forTicket("trace-legacy", 901);
+  assert.equal(row.payload.claims.length, 1);
+  assert.equal(row.payload.claims[0].claim, "old unsupported claim");
+});

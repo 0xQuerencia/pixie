@@ -1,4 +1,5 @@
 const db = require("./db");
+const { redactSecrets, redactInternalContent } = require("./redact");
 
 type MemoryKind = "problem" | "attempt" | "environment" | "resolution" | "context";
 interface RememberInput {
@@ -107,31 +108,7 @@ function ensureSchema(): void {
 }
 
 function cleanValue(value: unknown): string {
-  return String(value ?? "")
-    .replace(/\b(?:authorization|proxy-authorization)\s*[:=]\s*[^\r\n]+/gi, "[redacted auth header]")
-    .replace(/\b(?:cookies?|set-cookie)\s*:\s*[^\r\n]+/gi, "[redacted cookie]")
-    .replace(
-      /\b(?:cookies?|session(?:[_-]?id)?|sid|csrf|xsrf)\s*(?:is|[:=])\s*(?:"[^"]*"|'[^']*'|[^,\r\n;]+)/gi,
-      "[redacted cookie]",
-    )
-    .replace(
-      /\b(?:password|passwd|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^,\r\n;]+)/gi,
-      "$1=[redacted]",
-    )
-    .replace(
-      /([?&](?:password|passwd|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|session(?:[_-]?id)?|csrf|xsrf)=)[^&#\s]+/gi,
-      "$1[redacted]",
-    )
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
-    .replace(/\b(?:xox[baprs]-|gh[pousr]_|sk-)[A-Za-z0-9._~+/=-]+/gi, "[redacted token]")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted token]")
-    .replace(
-      /\b(?:system\s+prompt|chain[-\s]+of[-\s]+thought|hidden\s+instructions?)\b[^.!?]*/gi,
-      "[redacted internal content]",
-    )
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_VALUE_CHARS);
+  return redactInternalContent(redactSecrets(value)).replace(/\s+/g, " ").trim().slice(0, MAX_VALUE_CHARS);
 }
 
 function normalizeValue(value: unknown): string {

@@ -864,6 +864,11 @@ function needProgramActor(programId: string | null, actorId: string | null): Api
   return null;
 }
 
+function programThreadTs(programId: string | null, threadTs: string | null | undefined): string | null {
+  if (!programId || !threadTs) return null;
+  return db.getTicketByThreadTs(threadTs, null, programId) ? threadTs : null;
+}
+
 function ticketTenantError(ticket: Ticket, body: TicketActionBody = {}): string | null {
   if (body.programId && body.programId !== ticket.program_id) return "program mismatch";
   if (body.workspaceId && ticket.workspace_id && body.workspaceId !== ticket.workspace_id) return "workspace mismatch";
@@ -1467,7 +1472,11 @@ async function internalCopilot(action: string, body: CopilotBody = {}): Promise<
     switch (action) {
       case "draft": {
         if (!body.question) return { error: "question required" };
-        const res = await copilot.draftReply({ program, question: body.question, threadTs: body.threadTs || null });
+        const res = await copilot.draftReply({
+          program,
+          question: body.question,
+          threadTs: programThreadTs(programId, body.threadTs),
+        });
         copilot.auditCopilot(programId, actorId, "draft", { grounded: res.grounded });
         return res;
       }
@@ -1484,7 +1493,7 @@ async function internalCopilot(action: string, body: CopilotBody = {}): Promise<
         return copilot.summarizeThread({
           program,
           ticket,
-          threadTs: body.threadTs || (ticket && ticket.thread_ts) || null,
+          threadTs: programThreadTs(programId, body.threadTs) || (ticket && ticket.thread_ts) || null,
         });
       }
       case "factcheck": {
@@ -1497,7 +1506,11 @@ async function internalCopilot(action: string, body: CopilotBody = {}): Promise<
       }
       case "ask": {
         if (!body.question) return { error: "question required" };
-        const res = await copilot.ask({ program, question: body.question, threadTs: body.threadTs || null });
+        const res = await copilot.ask({
+          program,
+          question: body.question,
+          threadTs: programThreadTs(programId, body.threadTs),
+        });
         copilot.auditCopilot(programId, actorId, "ask", { grounded: res.grounded });
         return res;
       }

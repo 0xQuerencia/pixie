@@ -3,6 +3,7 @@ import sqlite = require("bun:sqlite");
 import type { Database as DatabaseType, SQLQueryBindings } from "bun:sqlite";
 import schema = require("./schema");
 import log = require("./log");
+import redact = require("./redact");
 import type {
   AuditEventRow,
   ChannelClaimRow,
@@ -290,40 +291,52 @@ function invalidateTrustCaches() {
   invalidateKnowledgeMaps();
 }
 
-function ensureProgramScopedUserTopics(database: DatabaseType) {
-  if (database.query("SELECT 1 FROM schema_data_migrations WHERE version = ?").get(USER_TOPICS_MIGRATION)) return;
+function dataMigrationDone(database: DatabaseType, version: string): boolean {
+  return Boolean(database.query("SELECT 1 FROM schema_data_migrations WHERE version = ?").get(version));
+}
 
-  const columns = database.query<{ name: string; pk: number }, []>("PRAGMA table_info(user_topics)").all();
-  const programColumn = columns.find((column) => column.name === "program_id");
-  database.transaction(() => {
-    if (programColumn && programColumn.pk === 0) {
-      database.exec(`
-        CREATE TABLE user_topics_scoped (
-          user_id     TEXT NOT NULL,
-          topic       TEXT NOT NULL,
-          program_id  TEXT,
-          was_helpful INTEGER NOT NULL DEFAULT 1,
-          created_at  INTEGER NOT NULL,
-          PRIMARY KEY (user_id, topic, program_id)
-        );
-        INSERT INTO user_topics_scoped (user_id, topic, program_id, was_helpful, created_at)
-          SELECT user_id, topic, program_id, was_helpful, created_at FROM user_topics;
-        DROP TABLE user_topics;
-        ALTER TABLE user_topics_scoped RENAME TO user_topics;
-      `);
-    }
-    database
-      .query("INSERT INTO schema_data_migrations (version, applied_at) VALUES (?, ?)")
-      .run(USER_TOPICS_MIGRATION, now());
-  })();
+// Marker check inside a write lock
+function runDataMigration(database: DatabaseType, version: string, apply: () => void): boolean {
+  if (dataMigrationDone(database, version)) return false;
+  let applied = false;
+  database
+    .transaction(() => {
+      if (dataMigrationDone(database, version)) return;
+      apply();
+      database
+        .query("INSERT OR IGNORE INTO schema_data_migrations (version, applied_at) VALUES (?, ?)")
+        .run(version, now());
+      applied = true;
+    })
+    .immediate();
+  return applied;
+}
+
+function ensureProgramScopedUserTopics(database: DatabaseType) {
+  runDataMigration(database, USER_TOPICS_MIGRATION, () => {
+    const columns = database.query<{ name: string; pk: number }, []>("PRAGMA table_info(user_topics)").all();
+    const programColumn = columns.find((column) => column.name === "program_id");
+    if (!programColumn || programColumn.pk !== 0) return;
+    database.exec(`
+      CREATE TABLE user_topics_scoped (
+        user_id     TEXT NOT NULL,
+        topic       TEXT NOT NULL,
+        program_id  TEXT,
+        was_helpful INTEGER NOT NULL DEFAULT 1,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (user_id, topic, program_id)
+      );
+      INSERT INTO user_topics_scoped (user_id, topic, program_id, was_helpful, created_at)
+        SELECT user_id, topic, program_id, was_helpful, created_at FROM user_topics;
+      DROP TABLE user_topics;
+      ALTER TABLE user_topics_scoped RENAME TO user_topics;
+    `);
+  });
 }
 
 function quarantineLegacyAutoLearned(database: DatabaseType) {
-  if (database.query("SELECT 1 FROM schema_data_migrations WHERE version = ?").get(LEGACY_AUTO_LEARNED_MIGRATION))
-    return;
-
   let changedRows = 0;
-  database.transaction(() => {
+  runDataMigration(database, LEGACY_AUTO_LEARNED_MIGRATION, () => {
     changedRows = database
       .query(
         `UPDATE learned_facts
@@ -332,11 +345,7 @@ function quarantineLegacyAutoLearned(database: DatabaseType) {
       )
       .run().changes;
     if (changedRows > 0) database.query("DELETE FROM answer_cache").run();
-    database
-      .query("INSERT INTO schema_data_migrations (version, applied_at) VALUES (?, ?)")
-      .run(LEGACY_AUTO_LEARNED_MIGRATION, now());
-  })();
-
+  });
   if (changedRows > 0) invalidateKnowledgeMaps();
 }
 
@@ -728,7 +737,9 @@ function listLearnedFacts(status: string, limit = 25, programId = null): Learned
   const statusClause =
     status === "approved"
       ? "status = ? AND superseded_by IS NULL AND auto_learned = 0"
-      : "status = ? AND superseded_by IS NULL";
+      : status === "pending" && !programId
+        ? "(status = ? OR (status = 'candidate' AND program_id IS NULL)) AND superseded_by IS NULL"
+        : "status = ? AND superseded_by IS NULL";
   if (programId) {
     return query<LearnedFactRow>(
       `SELECT * FROM learned_facts WHERE ${statusClause} AND program_id = ? ORDER BY created_at ASC LIMIT ?`,
@@ -818,10 +829,27 @@ function updateLearnedFact(
 ) {
   const changed =
     query(
-      `UPDATE learned_facts SET question = COALESCE(?, question), answer = COALESCE(?, answer), category = COALESCE(?, category) WHERE id = ?`,
+      `UPDATE learned_facts SET question = COALESCE(?, question), answer = COALESCE(?, answer), category = COALESCE(?, category)
+        WHERE id = ? AND status IN ('candidate', 'pending')`,
     ).run(question, answer, category, id).changes > 0;
   if (changed) invalidateTrustCaches();
   return changed;
+}
+
+// Edit and approve in one statement
+function approveLearnedFactWithEdits(
+  id: number,
+  { question = null, answer = null, category = null }: Record<string, unknown> = {},
+) {
+  const result = query(
+    `UPDATE learned_facts
+        SET question = COALESCE(?, question), answer = COALESCE(?, answer), category = COALESCE(?, category),
+            status = 'approved', verified_at = ?, auto_learned = 0
+      WHERE id = ? AND status IN ('candidate', 'pending')
+        AND NOT (program_id IS NULL AND COALESCE(source_ts, '') LIKE ?)`,
+  ).run(question, answer, category, now(), id, `${REPORT_DRAFT_SOURCE_PREFIX}%`);
+  if (result.changes > 0) invalidateTrustCaches();
+  return result.changes > 0;
 }
 
 function candidateForTicket(ticketId: number) {
@@ -1237,7 +1265,7 @@ function recordSourceFailure(name: string, error: unknown) {
   query(
     "INSERT INTO source_cache (name, text, fetched_at, fail_count, last_error) VALUES (?, '', ?, 1, ?)" +
       " ON CONFLICT(name) DO UPDATE SET fail_count = fail_count + 1, last_error = excluded.last_error",
-  ).run(name, t, String(error || "").slice(0, 500));
+  ).run(name, t, redact.redactSecrets(error).slice(0, 500));
 }
 
 function getSourceHealth(names: unknown) {
@@ -2057,6 +2085,7 @@ export = {
   approvedFacts,
   setLearnedStatus,
   updateLearnedFact,
+  approveLearnedFactWithEdits,
   candidateForTicket,
   deleteLearnedFact,
   deleteLearnedByStatus,

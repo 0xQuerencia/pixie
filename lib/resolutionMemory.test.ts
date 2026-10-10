@@ -196,3 +196,33 @@ test("listCandidates is scoped and bounded", () => {
 });
 export {};
 import type { TestDb, TestMemory } from "./test.types";
+
+test("a stale edit cannot change a fact after another reviewer approved it", () => {
+  const raw = db as unknown as Record<string, (...args: unknown[]) => any>;
+  const id = raw.addLearnedFact({
+    question: "q",
+    answer: "a",
+    status: "candidate",
+    sourceTs: "ar-1",
+    programId: "approval-race",
+  });
+  assert.equal((memory as any).approveCandidate({ id, actorId: "U-p2" }).ok, true);
+  assert.equal(raw.updateLearnedFact(id, { answer: "late edit" }), false);
+  assert.equal(raw.getLearnedFactById(id).answer, "a");
+  const stale = (memory as any).approveCandidate({ id, actorId: "U-p1", edits: { answer: "x" } });
+  assert.equal(stale.error, "only candidates can be approved here");
+  assert.equal(raw.getLearnedFactById(id).answer, "a");
+});
+
+test("an unowned quarantined candidate stays reachable in the legacy review queue", () => {
+  const raw = db as unknown as Record<string, (...args: unknown[]) => any>;
+  const id = raw.addLearnedFact({
+    question: "uq",
+    answer: "ua",
+    status: "candidate",
+    sourceTs: "uq-1",
+    programId: null,
+  });
+  const ids = raw.listLearnedFacts("pending", 100, null).map((row: { id: number }) => row.id);
+  assert.ok(ids.includes(id));
+});

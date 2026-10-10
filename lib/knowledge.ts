@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { redactSecrets } = require("./redact");
 const path = require("path");
 const crypto = require("crypto");
 const axios = require("axios");
@@ -536,7 +537,7 @@ async function fetchGithubFile(file: GithubFile, sourceName: string): Promise<Gi
   } catch (error: unknown) {
     log.warn(
       "knowledge",
-      `failed to fetch ${file.name} for "${sourceName}": ${error instanceof Error ? error.message : String(error)}`,
+      `failed to fetch ${file.name} for "${sourceName}": ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
     );
     return null;
   }
@@ -740,7 +741,7 @@ async function refreshSource(source: SourceRecord, force = false) {
     const tail = restored ? "serving last good copy" : "and there is no stored copy to fall back on";
     log.warn(
       "knowledge",
-      `failed to fetch "${source.name}": ${error instanceof Error ? error.message : String(error)} — ${tail}`,
+      `failed to fetch "${source.name}": ${redactSecrets(error instanceof Error ? error.message : String(error))} — ${tail}`,
     );
     try {
       db.recordSourceFailure(

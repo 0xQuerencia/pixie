@@ -343,3 +343,14 @@ test("store reconciliation migrates a legacy table before deduplicating", () => 
 });
 
 export {};
+
+test("json-shaped credentials are redacted before storage", () => {
+  supportMemory.remember({
+    programId: "memory-json-secret",
+    userId: "U-memory",
+    kind: "problem",
+    value: 'I need help with {"password":"hunter-two"}',
+  });
+  const [row] = supportMemory.recall("memory-json-secret", "U-memory");
+  assert.doesNotMatch(row.value, /hunter-two/);
+});

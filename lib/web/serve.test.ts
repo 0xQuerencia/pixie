@@ -86,7 +86,7 @@ test("absent PIXIE_INTERNAL_TOKEN → 404 (not 401/403); bad bearer → 401", as
   }
 });
 
-test("dashboard gates — pulse/stream/ask/health need session; writes need admin", async () => {
+test("dashboard gates — pulse/ask/health need session; stream needs admin; writes need admin", async () => {
   const serve = require("./serve");
   const auth = require("./auth");
   const anon = new Request("http://localhost/api/pulse");
