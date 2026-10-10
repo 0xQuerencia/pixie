@@ -175,7 +175,7 @@ function fallbackTranscript(ticket: Row): TranscriptRow[] {
       });
   }
   try {
-    const context = require("./context").getThreadMessages(ticket.thread_ts, 40);
+    const context = require("./context").getThreadMessages(ticket.thread_ts, 40, ticket.channel_id || null);
     for (const row of context) rows.push({ role: row.speaker === "pixie" ? "pixie" : "requester", text: row.text });
   } catch (_) {}
   return rows;

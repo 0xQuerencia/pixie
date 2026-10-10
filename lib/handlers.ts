@@ -114,7 +114,7 @@ interface HandlerContext {
       parentUserId?: string | null;
     },
   ): Promise<ThreadCrowd>;
-  getThreadContext(threadTs: string): string;
+  getThreadContext(threadTs: string, currentQuestion?: string | null, channel?: string | null): string;
   hasSpokenInThread(threadTs: string): boolean;
   updateUserHistory(userId: string, question: string, answered: boolean, programId?: string | null): void;
 }
@@ -314,7 +314,7 @@ async function handleImage({ event, client, imageFile, program = null }: ImageAr
     const reply = await vision.analyzeImage(
       imageFile.url_private,
       question,
-      context.getThreadContext(threadTs),
+      context.getThreadContext(threadTs, null, event.channel),
       config.slack.botToken,
       docs,
     );
