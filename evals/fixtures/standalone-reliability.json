@@ -1,0 +1,37 @@
+[
+  {
+    "name": "paraphrase retrieval",
+    "input": {
+      "kind": "retrieval",
+      "question": "Can I get my money back if I never activated the grant?",
+      "sections": [["Program rules", "Unused grants may be returned before activation."]]
+    },
+    "expected": { "source": "Program rules" }
+  },
+  {
+    "name": "needs_review fails closed",
+    "input": {
+      "kind": "grounding",
+      "verdict": { "verdict": "needs_review", "claims": [{ "claim": "The grant can be returned", "supported": true, "evidenceIds": ["e1"] }] },
+      "evidence": [{ "id": "e1", "programId": "fixture", "supportsClaims": ["The grant can be returned"] }]
+    },
+    "expected": { "sendable": false, "verdict": "unsupported" }
+  },
+  {
+    "name": "cross-program evidence fails closed",
+    "input": {
+      "kind": "grounding",
+      "verdict": { "verdict": "supported", "claims": [{ "claim": "The grant can be returned", "supported": true, "evidenceIds": ["e1"] }] },
+      "evidence": [{ "id": "e1", "programId": "other-program", "supportsClaims": ["The grant can be returned"] }]
+    },
+    "expected": { "sendable": false, "verdict": "unsupported" }
+  },
+  {
+    "name": "semantic incident grouping",
+    "input": {
+      "kind": "incidents",
+      "questions": ["The portal is down", "The site redirects me back to login", "How do I submit a project?"]
+    },
+    "expected": { "groupContains": ["The portal is down", "The site redirects me back to login"] }
+  }
+]

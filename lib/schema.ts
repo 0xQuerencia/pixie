@@ -28,6 +28,25 @@ CREATE TABLE IF NOT EXISTS threads (
   updated_at  INTEGER NOT NULL
 );
 
+-- Bounded, program-and-user scoped conversation context. These rows are never
+-- part of retrieval or the trusted knowledge corpus.
+CREATE TABLE IF NOT EXISTS support_memory (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  program_id        TEXT NOT NULL,
+  user_id           TEXT NOT NULL,
+  kind              TEXT NOT NULL,
+  value             TEXT NOT NULL,
+  normalized_value  TEXT NOT NULL,
+  source_thread_ts  TEXT,
+  source_ticket_id  INTEGER,
+  confidence        REAL NOT NULL DEFAULT 1,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  expires_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_support_memory_scope
+  ON support_memory(program_id, user_id, expires_at DESC, created_at DESC);
+
 -- The last handful of things each person said, verbatim. The intent gate reads
 -- these: "it still doesnt work" is chat after a joke and a cry for help after
 -- twenty minutes of debugging, and the message alone cannot tell you which.
@@ -43,11 +62,17 @@ CREATE TABLE IF NOT EXISTS user_messages (
 CREATE INDEX IF NOT EXISTS idx_user_messages_user ON user_messages(user_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS user_topics (
-  user_id    TEXT NOT NULL,
-  topic      TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  topic       TEXT NOT NULL,
+  program_id  TEXT,
   was_helpful INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (user_id, topic)
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, topic, program_id)
+);
+
+CREATE TABLE IF NOT EXISTS schema_data_migrations (
+  version    TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS answer_cache (
@@ -208,10 +233,31 @@ CREATE TABLE IF NOT EXISTS answered_threads (
   thread_ts   TEXT NOT NULL,
   created_at  INTEGER NOT NULL
 );
+
+-- Structured operational traces used by the Wizard inspector. Payloads are
+-- sanitized before insertion and expire independently of ticket history.
+CREATE TABLE IF NOT EXISTS answer_traces (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  program_id    TEXT NOT NULL,
+  ticket_id     INTEGER,
+  thread_ts     TEXT,
+  request_id    TEXT,
+  stage         TEXT NOT NULL,
+  payload_json  TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_answer_traces_ticket
+  ON answer_traces(program_id, ticket_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_answer_traces_thread
+  ON answer_traces(program_id, thread_ts, created_at ASC);
 `;
 
 const MIGRATIONS = [
   ["doc_gaps", "message_ts", "ALTER TABLE doc_gaps ADD COLUMN message_ts TEXT"],
+
+  ["support_memory", "normalized_value", "ALTER TABLE support_memory ADD COLUMN normalized_value TEXT"],
+  ["support_memory", "updated_at", "ALTER TABLE support_memory ADD COLUMN updated_at INTEGER"],
 
   ["answer_cache", "ask_count", "ALTER TABLE answer_cache ADD COLUMN ask_count INTEGER NOT NULL DEFAULT 1"],
   ["answer_cache", "last_asked_at", "ALTER TABLE answer_cache ADD COLUMN last_asked_at INTEGER"],
@@ -225,6 +271,7 @@ const MIGRATIONS = [
   ["programs", "scope", "ALTER TABLE programs ADD COLUMN scope TEXT DEFAULT 'any'"],
   ["learned_facts", "program_id", "ALTER TABLE learned_facts ADD COLUMN program_id TEXT"],
   ["doc_gaps", "program_id", "ALTER TABLE doc_gaps ADD COLUMN program_id TEXT"],
+  ["user_topics", "program_id", "ALTER TABLE user_topics ADD COLUMN program_id TEXT"],
 
   [
     "gap_rejections",
@@ -483,6 +530,22 @@ CREATE INDEX IF NOT EXISTS idx_radar_program_status ON radar_signals(program_id,
 CREATE INDEX IF NOT EXISTS idx_incident_reports_incident ON incident_reports(incident_id, notified_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_program_time ON llm_usage(program_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_request ON llm_usage(request_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_support_memory_expiry ON support_memory(expires_at);
+UPDATE support_memory
+   SET normalized_value = lower(trim(value))
+ WHERE normalized_value IS NULL OR normalized_value = '';
+UPDATE support_memory
+   SET updated_at = created_at
+ WHERE updated_at IS NULL;
+DELETE FROM support_memory
+ WHERE id NOT IN (
+   SELECT MAX(id)
+     FROM support_memory
+    GROUP BY program_id, user_id, kind, normalized_value
+ );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_support_memory_logical_key
+  ON support_memory(program_id, user_id, kind, normalized_value);
+CREATE INDEX IF NOT EXISTS idx_answer_traces_expiry ON answer_traces(expires_at);
 `;
 
 export = { SCHEMA, MIGRATIONS, POST_MIGRATION_SCHEMA };

@@ -59,7 +59,7 @@ const TOOLS: ToolItem[] = [
       "Documentation decays; Slack answers get buried. The Knowledge Matrix continuously syncs your knowledge bases and marks stale answers when guidelines change.",
     cta: "Explore Knowledge Matrix",
     graphicType: "matrix",
-    metrics: ["GitHub & Notion sync", "Stale answer alerts", "Vector index updates"],
+    metrics: ["GitHub & Notion sync", "Stale answer alerts", "Retrieval index updates"],
   },
 ];
 

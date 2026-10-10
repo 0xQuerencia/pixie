@@ -4,6 +4,7 @@ const { test, before, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("./db") as unknown as TestDb;
 const programs = require("./programs") as typeof import("./programs");
+const knowledge = require("./knowledge");
 const tickets = require("./tickets") as unknown as TestTickets;
 const respond = require("./respond") as unknown as {
   ALWAYS: string;
@@ -65,6 +66,14 @@ const FLEET = JSON.stringify([
     helpChannel: HELP,
     channels: [HELP],
     organizerChannel: ORG,
+    sources: [
+      {
+        name: "Docs",
+        type: "text",
+        content:
+          "Repositories should be public for review. Support questions can be answered in this channel. Yes, as long as it's public.",
+      },
+    ],
     links: { docs: "https://example.test/docs" },
   },
   {
@@ -90,6 +99,12 @@ before(() => {
 beforeEach(() => {
   process.env.PIXIE_PROGRAMS_JSON = FLEET;
   programs.invalidate();
+  const docs = programs.get("st-prog").sources[0];
+  (db as unknown as { saveSourceText(name: string, text: string): void }).saveSourceText(
+    knowledge.sourceCacheKey(docs),
+    String(docs.content || ""),
+  );
+  knowledge.invalidate();
   intent.classifyIntent = async () => intent.HELP_NEEDED;
 });
 
@@ -100,6 +115,7 @@ afterEach(() => {
   if (savedBlob === undefined) delete process.env.PIXIE_PROGRAMS_JSON;
   else process.env.PIXIE_PROGRAMS_JSON = savedBlob;
   programs.invalidate();
+  knowledge.invalidate();
 });
 
 let askN = 0;

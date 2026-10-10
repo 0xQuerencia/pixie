@@ -479,4 +479,26 @@ test("provider exhaustion with no fallback left rejects (defined degradation)", 
     },
   );
 });
+
+test("withNoTelemetry keeps a probe completion out of llm_usage", async () => {
+  const db = require("./db");
+  const originalRecord = db.recordLlmUsage;
+  let recorded = 0;
+  db.recordLlmUsage = () => {
+    recorded += 1;
+  };
+  try {
+    await withAxiosPost(
+      async () => ({ data: { choices: [{ message: { content: "probe answer" }, finish_reason: "stop" }] } }),
+      async () => {
+        const result = await llm.withNoTelemetry(() => llm.complete({ ...REQUEST, telemetry: { operation: "probe" } }));
+        assert.equal(result.text, "probe answer");
+      },
+    );
+  } finally {
+    db.recordLlmUsage = originalRecord;
+  }
+  assert.equal(recorded, 0);
+});
+
 export {};

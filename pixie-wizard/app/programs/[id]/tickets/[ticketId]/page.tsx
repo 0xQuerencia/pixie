@@ -1,20 +1,13 @@
 import Link from "next/link";
 import { requireProgramMembership } from "@/lib/programAccess";
-import { coreDashboardTicketDetail, coreMacrosList } from "@/lib/pixieCore";
+import { coreDashboardTicketDetail, coreMacrosList, type CoreTraceRow } from "@/lib/pixieCore";
 import { resolveIdentities, labelFor } from "@/lib/identity";
-import {
-  PageHeader,
-  Section,
-  CoreError,
-  StatusBadge,
-  Chip,
-  EmptyState,
-  Mono,
-} from "@/app/_components/DashboardShell";
+import { PageHeader, Section, CoreError, StatusBadge, Chip, EmptyState, Mono } from "@/app/_components/DashboardShell";
 import { shortTime } from "@/app/_components/format";
 import { labelClass } from "@/app/wizard/_components/formStyles";
 import { TicketActions, TicketComposer } from "./TicketActions";
 import { CopilotPanel } from "./CopilotPanel";
+import { TraceTimeline } from "./TraceTimeline";
 import { MacroSendForm, type MacroRow } from "../../macros/MacroForms";
 
 type TicketDetail = {
@@ -38,8 +31,18 @@ type TicketDetail = {
     resolved_at: number | null;
     resolutionSummary?: string | null;
   };
-  events: Array<{ id: number; event_type?: string; kind?: string; actor_id: string | null; detail?: string | null; note?: string | null; created_at: number }>;
+  events: Array<{
+    id: number;
+    event_type?: string;
+    kind?: string;
+    actor_id: string | null;
+    detail?: string | null;
+    note?: string | null;
+    created_at: number;
+  }>;
   notes: Array<{ id: number; author_id: string; body: string; created_at: number }>;
+  traces?: CoreTraceRow[];
+  tracesError?: boolean;
 };
 
 // A timeline needs two things a status badge can't give: a node to hang the
@@ -105,6 +108,7 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
   const { ticket } = detail;
   const events = Array.isArray(detail.events) ? detail.events : [];
   const notes = Array.isArray(detail.notes) ? detail.notes : [];
+  const traces = Array.isArray(detail.traces) ? detail.traces : [];
 
   let macros: MacroRow[] = [];
   try {
@@ -144,11 +148,7 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
             {ticket.priority ? (
               <span
                 className={`pixie-chip ${
-                  ticket.priority === "urgent"
-                    ? "text-danger"
-                    : ticket.priority === "high"
-                      ? "text-tang"
-                      : ""
+                  ticket.priority === "urgent" ? "text-danger" : ticket.priority === "high" ? "text-tang" : ""
                 }`}
               >
                 {ticket.priority}
@@ -161,14 +161,10 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
             {typeof ticket.ai_confidence === "number" || decision ? (
               <span className="flex flex-wrap items-center gap-2">
                 {typeof ticket.ai_confidence === "number" && (
-                  <Mono className="text-[13px] text-text tabular-nums">
-                    {Math.round(ticket.ai_confidence * 100)}%
-                  </Mono>
+                  <Mono className="text-[13px] text-text tabular-nums">{Math.round(ticket.ai_confidence * 100)}%</Mono>
                 )}
                 {decision && (
-                  <span className={`pixie-chip ${DECISION_TONE[ticket.ai_decision ?? ""] ?? ""}`}>
-                    {decision}
-                  </span>
+                  <span className={`pixie-chip ${DECISION_TONE[ticket.ai_decision ?? ""] ?? ""}`}>{decision}</span>
                 )}
               </span>
             ) : (
@@ -222,17 +218,19 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
                     <li key={e.id} className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-x-3 pb-4 last:pb-0">
                       <div className="relative flex justify-center">
                         <span className={`mt-[7px] size-1.5 shrink-0 rounded-[1px] ${tone.mark}`} aria-hidden />
-                        {i < events.length - 1 && (
-                          <span className="absolute bottom-0 top-3 w-px bg-line" aria-hidden />
-                        )}
+                        {i < events.length - 1 && <span className="absolute bottom-0 top-3 w-px bg-line" aria-hidden />}
                       </div>
                       <div className="min-w-0">
                         <p className="flex flex-wrap items-baseline gap-x-2">
                           <span className={`font-mono text-[12px] ${tone.text}`}>{eventLabel(e)}</span>
-                          {e.actor_id && <span className="text-[13px] text-text-muted">{labelFor(identities, e.actor_id)}</span>}
+                          {e.actor_id && (
+                            <span className="text-[13px] text-text-muted">{labelFor(identities, e.actor_id)}</span>
+                          )}
                           <span className="font-mono text-[11px] text-text-muted">{shortTime(e.created_at)}</span>
                         </p>
-                        {(e.detail || e.note) && <p className="mt-1 text-[13px] text-text-muted">{e.detail || e.note}</p>}
+                        {(e.detail || e.note) && (
+                          <p className="mt-1 text-[13px] text-text-muted">{e.detail || e.note}</p>
+                        )}
                       </div>
                     </li>
                   );
@@ -240,6 +238,8 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
               </ol>
             )}
           </Section>
+
+          <TraceTimeline traces={traces} tracesError={detail.tracesError === true} />
 
           <Section title="Internal notes">
             {notes.length === 0 ? (
@@ -261,9 +261,7 @@ export default async function TicketPage({ params }: { params: Promise<{ id: str
 
         <div className="min-w-0 space-y-6 lg:sticky lg:top-6">
           <TicketActions programId={id} ticketId={ticket.id} />
-          {enabledMacros.length > 0 && (
-            <MacroSendForm programId={id} ticketId={ticket.id} macros={enabledMacros} />
-          )}
+          {enabledMacros.length > 0 && <MacroSendForm programId={id} ticketId={ticket.id} macros={enabledMacros} />}
           <CopilotPanel programId={id} ticketId={ticket.id} question={ticket.question} threadTs={ticket.thread_ts} />
         </div>
       </div>

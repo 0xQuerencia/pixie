@@ -33,6 +33,7 @@ export interface Program {
   autoAssign: boolean;
   helperPing: boolean;
   categories: Record<string, unknown> | null;
+  // Compatibility only; both values stay review-safe.
   learning: "auto" | "review";
   ticketVisibility: TicketVisibility;
   shadowMode: boolean;
@@ -68,6 +69,35 @@ export interface ProgramSource {
   type?: string;
   url?: string;
   [key: string]: unknown;
+}
+
+export interface ClaimEvidence {
+  id: string;
+  programId?: string | null;
+  program_id?: string | null;
+  sourceName?: string | null;
+  heading?: string | null;
+  text: string;
+  authority?: string | null;
+  kind?: string | null;
+  status?: string | null;
+  approved?: boolean;
+  selected?: boolean;
+  [key: string]: unknown;
+}
+
+export interface VerifiedClaim {
+  claim: string;
+  supported: boolean;
+  evidenceIds: string[];
+  reason: string;
+}
+
+export interface AnswerVerification {
+  verdict: "supported" | "unsupported";
+  sendable: boolean;
+  claims: VerifiedClaim[];
+  errors: string[];
 }
 
 export type TicketStatus =

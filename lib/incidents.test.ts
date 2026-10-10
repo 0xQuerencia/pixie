@@ -76,7 +76,32 @@ test("manual incidents are confirmed immediately and outage paraphrases match wi
   assert.ok(incidents.matchActiveIncident({ programId: "dec-manual", question: "is the site down?" }));
   assert.ok(incidents.matchActiveIncident({ programId: "dec-manual", question: "acme won't load" }));
   assert.ok(incidents.matchActiveIncident({ programId: "dec-manual", question: "cant open the website" }));
+  assert.ok(incidents.matchActiveIncident({ programId: "dec-manual", question: "Acme website is down for me too" }));
+  assert.equal(
+    incidents.matchActiveIncident({ programId: "dec-manual", question: "My unrelated website is down" }),
+    null,
+  );
+  assert.equal(incidents.matchActiveIncident({ programId: "dec-manual", question: "The website is not down" }), null);
+  assert.equal(
+    incidents.matchActiveIncident({
+      programId: "dec-manual",
+      question: "What is the deadline for reporting a website problem?",
+    }),
+    null,
+  );
   assert.equal(incidents.matchActiveIncident({ programId: "dec-manual", question: "when does review finish?" }), null);
+});
+
+test("semantic incident clustering groups outage paraphrases but gates ordinary questions", () => {
+  const groups = incidents.incidentClusterQuestions([
+    "The portal is down",
+    "The site redirects me back to login",
+    "How do I submit a project?",
+  ]);
+  const outageGroup = groups.find((group) => group.includes("The portal is down"));
+  assert.ok(outageGroup);
+  assert.ok(outageGroup.includes("The site redirects me back to login"));
+  assert.ok(!outageGroup.includes("How do I submit a project?"));
 });
 
 test("notifyAffectedUsers is idempotent and retry-safe: only unnotified reports are messaged, failures don't block the rest", async () => {
@@ -452,7 +477,7 @@ test("recordAffectedReport dedupes on (incident, channel, thread) only", () => {
       channel: "C1",
       threadTs: "t1",
     }),
-    { ok: true, deduped: true },
+    { error: "program mismatch" },
   );
   assert.equal(incidents.affectedReports(id).length, 1);
   assert.deepEqual(
@@ -488,6 +513,36 @@ test("recordAffectedReport dedupes on (incident, channel, thread) only", () => {
     }),
     { ok: true, deduped: false },
   );
+});
+
+test("incident detail, linked tickets, and affected reports are program-scoped", () => {
+  const program = "char-read-scope";
+  const other = "char-read-other";
+  db.saveProgram({ id: program, name: "Read scope" });
+  db.saveProgram({ id: other, name: "Read other" });
+  const id = makeCandidate(program, "read-scope outage");
+  const ticketId = db.createTicket({
+    programId: program,
+    channel: "C-read",
+    threadTs: "char-read-ticket",
+    requesterId: "U-read",
+    question: "read-scope outage",
+  });
+  incidents.linkTicket({ incidentId: id, ticketId });
+  incidents.recordAffectedReport({
+    incidentId: id,
+    programId: program,
+    requesterId: "U-read",
+    channel: "C-read",
+    threadTs: "char-read-report",
+  });
+
+  assert.equal(incidents.getIncident(id, program).program_id, program);
+  assert.equal(incidents.getIncident(id, other), null);
+  assert.equal(incidents.incidentTickets(id, program).length, 1);
+  assert.equal(incidents.incidentTickets(id, other).length, 0);
+  assert.equal(incidents.affectedReports(id, false, program).length, 1);
+  assert.equal(incidents.affectedReports(id, false, other).length, 0);
 });
 
 test("notifyAffectedUsers contract — errors, messages, filter, audit", async () => {

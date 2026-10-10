@@ -50,6 +50,7 @@ export interface TestDb {
   isTakeover(...args: unknown[]): boolean;
   listAuditEvents(...args: unknown[]): TestRow[];
   listHelpers(...args: unknown[]): TestRow[];
+  listReviewableLearnedFacts(...args: unknown[]): TestRow[];
   listTicketEvents(...args: unknown[]): TestRow[];
   listTicketNotes(...args: unknown[]): TestRow[];
   learnedFactForTicket(...args: unknown[]): TestRow | null;
@@ -132,6 +133,7 @@ export interface TestIncidentApi {
   detectBursts(...args: unknown[]): { candidates: TestIncident[]; error?: string };
   getIncident(...args: unknown[]): TestIncident | null;
   incidentTickets(...args: unknown[]): TestIncident[];
+  incidentClusterQuestions(...args: unknown[]): string[][];
   listIncidents(...args: unknown[]): TestIncident[];
   draftAnnouncement(...args: unknown[]): { ok?: boolean; error?: string; draft?: string; ticketCount?: number };
   linkTicket(...args: unknown[]): { ok?: boolean; error?: string };

@@ -4,6 +4,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("./db");
 const context = require("./context");
+const supportMemory = require("./supportMemory");
 
 db.open(":memory:");
 
@@ -90,23 +91,23 @@ test("hasSpokenInThread flips only once pixie replies", () => {
 });
 
 test("user context exposes derived topics, not raw questions", () => {
-  context.updateUserHistory("U7", "how do i unlock the next region?", true);
-  const userContext = context.getUserContext("U7");
+  context.updateUserHistory("U7", "how do i unlock the next region?", true, "prog-a");
+  const userContext = context.getUserContext("U7", "prog-a");
 
   assert.deepEqual(userContext.recentTopics, ["unlock next region"]);
   assert.deepEqual(userContext.helpfulAnswers, ["unlock next region"]);
 });
 
 test("unhelpful answers are tracked as topics but not as helpful ones", () => {
-  context.updateUserHistory("U8", "what is the airspeed of a swallow", false);
-  const userContext = context.getUserContext("U8");
+  context.updateUserHistory("U8", "what is the airspeed of a swallow", false, "prog-a");
+  const userContext = context.getUserContext("U8", "prog-a");
 
   assert.equal(userContext.recentTopics.length, 1);
   assert.deepEqual(userContext.helpfulAnswers, []);
 });
 
 test("getUserContext returns null for an unseen user", () => {
-  assert.equal(context.getUserContext("U-nobody"), null);
+  assert.equal(context.getUserContext("U-nobody", "prog-a"), null);
 });
 
 test("threads are isolated by ts", () => {
@@ -116,9 +117,113 @@ test("threads are isolated by ts", () => {
   assert.doesNotMatch(context.getThreadContext("char-t-a"), /beta question/);
 });
 
+test("thread context is isolated by channel when a shared thread timestamp is reused", () => {
+  context.addToThread("shared-channel-thread", "user", "alpha channel question", "U1", "C-alpha");
+  context.addToThread("shared-channel-thread", "user", "beta channel question", "U1", "C-beta");
+
+  assert.match(context.getThreadContext("shared-channel-thread", null, "C-alpha"), /alpha channel question/);
+  assert.doesNotMatch(context.getThreadContext("shared-channel-thread", null, "C-alpha"), /beta channel question/);
+  assert.match(context.getThreadContext("shared-channel-thread", null, "C-beta"), /beta channel question/);
+  assert.doesNotMatch(context.getThreadContext("shared-channel-thread", null, "C-beta"), /alpha channel question/);
+  assert.equal(context.getThreadContext("shared-channel-thread"), null);
+});
+
+test("thread messages are isolated by channel when a shared thread timestamp is reused", () => {
+  context.addToThread("shared-channel-messages", "user", "alpha message", "U1", "C-alpha");
+  context.addToThread("shared-channel-messages", "user", "beta message", "U1", "C-beta");
+
+  assert.deepEqual(
+    context.getThreadMessages("shared-channel-messages", "C-alpha").map((message) => message.text),
+    ["alpha message"],
+  );
+  assert.deepEqual(
+    context.getThreadMessages("shared-channel-messages", "C-beta").map((message) => message.text),
+    ["beta message"],
+  );
+  assert.deepEqual(context.getThreadMessages("shared-channel-messages"), []);
+});
+
+test("thread context accepts workspace and channel scopes together", () => {
+  context.addToThread("shared-workspace-thread", "user", "workspace one", "U1", {
+    workspace: "W1",
+    channel: "C1",
+  });
+  context.addToThread("shared-workspace-thread", "user", "workspace two", "U1", {
+    workspace: "W2",
+    channel: "C1",
+  });
+
+  assert.match(
+    context.getThreadContext("shared-workspace-thread", { workspace: "W1", channel: "C1" }),
+    /workspace one/,
+  );
+  assert.doesNotMatch(
+    context.getThreadContext("shared-workspace-thread", { workspace: "W1", channel: "C1" }),
+    /workspace two/,
+  );
+});
+
 test("addToThread with no ts is a no-op, never throws", () => {
   assert.doesNotThrow(() => context.addToThread(null, "user", "lost message", "U1", "C1"));
   assert.doesNotThrow(() => context.addToThread(undefined, "user", "lost message", "U1", "C1"));
+});
+
+test("support capture recognizes failed attempts and environments", () => {
+  assert.equal(context.isAttemptReport("clear-cookies didn't work"), true);
+  assert.equal(context.isAttemptReport("I already cleared cookies"), true);
+  assert.equal(context.isAttemptReport("I already cleared the cache"), true);
+  assert.equal(context.isAttemptReport("I restarted and reinstalled the app"), true);
+  assert.equal(context.isAttemptReport("I tried changing the setting"), true);
+  assert.equal(context.isAttemptReport("That didn't help"), true);
+  assert.deepEqual(context.detectEnvironment("I'm using Chrome on Windows from an iPhone"), [
+    "Chrome",
+    "Windows",
+    "iPhone",
+  ]);
+  assert.deepEqual(context.extractAttemptedSteps("I already cleared cookies"), ["cleared cookies"]);
+  assert.equal(context.isSupportQuestionOrAttempt("what a lovely day"), false);
+  assert.equal(context.isSupportQuestionOrAttempt("I love this app"), false);
+});
+
+test("support capture ignores chatter and deduplicates repeated reports", () => {
+  supportMemory.forgetProgramUser("capture-program", "U-capture");
+  context.rememberSupportContext({
+    programId: "capture-program",
+    userId: "U-capture",
+    question: "what a lovely day",
+  });
+  assert.deepEqual(supportMemory.recall("capture-program", "U-capture"), []);
+
+  const question = "clear-cookies didn't work on Chrome for me";
+  context.rememberSupportContext({
+    programId: "capture-program",
+    userId: "U-capture",
+    question,
+  });
+  context.rememberSupportContext({
+    programId: "capture-program",
+    userId: "U-capture",
+    question,
+  });
+  const rows = supportMemory.recall("capture-program", "U-capture", 20);
+  assert.equal(rows.filter((row) => row.kind === "problem").length, 1);
+  assert.equal(rows.filter((row) => row.kind === "attempt").length, 1);
+  assert.equal(rows.filter((row) => row.kind === "environment").length, 1);
+  assert.equal(new Set(rows.map((row) => row.value)).size, rows.length);
+  assert.match(rows.find((row) => row.kind === "environment").value, /Chrome/);
+});
+
+test("support capture does not duplicate an utterance as the problem and attempt", () => {
+  supportMemory.forgetProgramUser("capture-single-step", "U-capture");
+  context.rememberSupportContext({
+    programId: "capture-single-step",
+    userId: "U-capture",
+    question: "restarted",
+  });
+
+  const rows = supportMemory.recall("capture-single-step", "U-capture");
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "problem");
 });
 
 test("seedFromSlack skips the live message and empty texts", async () => {
@@ -219,3 +324,10 @@ test("seedFromSlack re-seeds a thread whose in-memory transcript was lost", asyn
   assert.equal(calls, 1, "a thread with a live transcript is not fetched twice");
 });
 export {};
+
+test("user topics never cross programs", () => {
+  context.updateUserHistory("U-cross", "alpha confidential deadline", true, "prog-a");
+  assert.equal(context.getUserContext("U-cross", "prog-b"), null);
+  assert.equal(context.getUserContext("U-cross"), null);
+  assert.deepEqual(context.getUserContext("U-cross", "prog-a")?.recentTopics.length, 1);
+});

@@ -10,7 +10,12 @@ const cache = require("./cache");
 const intent = require("./intent");
 const link = require("./link");
 const lookup = require("./lookup");
+const reply = require("./reply");
 const context = require("./context");
+const knowledge = require("./knowledge");
+const programs = require("./programs");
+const claimVerifier = require("./claimVerifier");
+const traceStore = require("./pipeline/traceStore");
 const { config } = require("./config");
 
 type SlackElement = { action_id?: string; text?: string };
@@ -34,10 +39,28 @@ type RichClient = {
 
 db.open(":memory:");
 
+const SAFE_SOURCE_TEXT = [
+  "The launch status and project documentation are listed here.",
+  "Anyone can join, no team is needed.",
+  "Yes, it should be public when the project is submitted.",
+  "You can use the Wokwi simulator for firmware testing.",
+  "Check your canvas size and the docs for export guidance.",
+  "Tier 2 needs a testbench.",
+  "Export it as a PNG at native size.",
+  "Export as PNG at native size.",
+  "Held answer text.",
+].join(" ");
+const SHARED_TEST_SOURCES = ["Docs", "Acme Docs", "Acme FAQ"].map((name) => ({
+  name,
+  type: "text",
+  content: SAFE_SOURCE_TEXT,
+}));
+
 answer.getGroundedAnswer = async () => null;
 answer.getAnswerOrChat = async () => null;
 let realComplete: typeof llm.complete;
 let savedFaq: string[];
+let savedProgramsJson: string | undefined;
 before(() => {
   savedFaq = config.slack.faqChannels || [];
   config.slack.faqChannels = [
@@ -53,12 +76,22 @@ before(() => {
     "C0OTHER",
     "C-help",
   ];
+  savedProgramsJson = process.env.PIXIE_PROGRAMS_JSON;
+  process.env.PIXIE_PROGRAMS_JSON = JSON.stringify([{ id: "shared", name: "Shared", sources: SHARED_TEST_SOURCES }]);
+  programs.invalidate();
+  for (const source of SHARED_TEST_SOURCES)
+    db.saveSourceText(knowledge.sourceCacheKey(source) || source.name, source.content);
+  knowledge.invalidate();
   realComplete = llm.complete;
   llm.complete = async () => ({ text: "NONE", finishReason: "stop" });
 });
 after(() => {
   llm.complete = realComplete;
   config.slack.faqChannels = savedFaq;
+  if (savedProgramsJson === undefined) delete process.env.PIXIE_PROGRAMS_JSON;
+  else process.env.PIXIE_PROGRAMS_JSON = savedProgramsJson;
+  programs.invalidate();
+  knowledge.invalidate();
 });
 
 test("isClarifyingQuestion catches a short question handed back to the user", () => {
@@ -236,6 +269,26 @@ function stubNoCache() {
   };
 }
 
+function verifiedAnswer(source: string, answerText: string, programId: string) {
+  const evidence = [
+    {
+      id: "test-evidence",
+      programId,
+      sourceName: source,
+      heading: null,
+      text: answerText,
+      authority: "source",
+      kind: "source",
+    },
+  ];
+  return {
+    source,
+    answer: answerText,
+    evidence,
+    verification: claimVerifier.verifyAnswerSync({ programId, answer: answerText, evidence }),
+  };
+}
+
 test("respond streams the answer into the placeholder instead of waiting for all of it", async () => {
   const client = fakeClient();
   const originalIntent = intent.classifyIntent;
@@ -263,7 +316,7 @@ test("respond streams the answer into the placeholder instead of waiting for all
 
     assert.equal(replied, true);
     assert.equal(client.calls.posts.length, 1);
-    assert.equal(client.calls.posts[0], "_thinking..._");
+    assert.equal(client.calls.posts[0], reply.THINKING);
     assert.ok(client.calls.updates.length >= 1, "expected at least one streamed update");
     assert.match(client.calls.updates[client.calls.updates.length - 1], /chips/);
   } finally {
@@ -308,6 +361,20 @@ test("a fresh question is cacheable, and the repeat costs no model call", async 
   } finally {
     restoreAnswers();
   }
+});
+
+test("a poisoned cache hit is re-verified against fresh evidence before use", async () => {
+  await withHelpProgram({ id: "cache-reverify" }, async (programId: string) => {
+    const question = "what is the AI limit?";
+    cache.put(question, { source: "Docs", answer: "The AI limit is 30%." }, programId);
+    const known = await lookup.knownAnswer({
+      question,
+      contextPrompt: "",
+      mode: respond.ALWAYS,
+      program: programs.get(programId),
+    });
+    assert.equal(known, null);
+  });
 });
 
 test("respond tells the model when the channel it's replying in is the help channel", async () => {
@@ -457,6 +524,119 @@ test("a message the gate accepts is answered normally", async () => {
     assert.match(client.calls.posts.join(" "), /canvas size/);
     assert.deepEqual(client.calls.updates, [], "ambient answers are never streamed");
   } finally {
+    restoreAnswers();
+    intent.classifyIntent = originalIntent;
+  }
+});
+
+test("program answers do not stream model text before claim verification", async () => {
+  const originalPlain = answer.getAnswerOrChat;
+  const originalStream = answer.getAnswerOrChatStream;
+  const originalIntent = intent.classifyIntent;
+  let streamCalls = 0;
+  let plainOptions: Record<string, unknown> | undefined;
+  answer.getAnswerOrChat = async (
+    _question: string,
+    _corpus: string,
+    _context: string,
+    _inHelp: boolean,
+    _program: unknown,
+    _channel: string,
+    options: Record<string, unknown> = {},
+  ) => {
+    plainOptions = options;
+    return { source: "Docs", answer: "you can use wokwi simulator" };
+  };
+  answer.getAnswerOrChatStream = async (
+    _question: string,
+    _corpus: string,
+    _context: string,
+    options: StreamOptions = {},
+  ) => {
+    streamCalls += 1;
+    options.onText?.("this must not reach Slack");
+    return { source: "Docs", answer: "this must not reach Slack" };
+  };
+  intent.classifyIntent = async () => intent.HELP_NEEDED;
+
+  try {
+    await withHelpProgram({ id: "stream-gated" }, async (programId: string, channel: string) => {
+      const client = richClient();
+      const handled = await respond.respond({
+        client,
+        channel,
+        threadTs: "t-stream-gated",
+        userId: "U-stream-gated",
+        question: "how do i test my firmware?",
+        mode: respond.HELP_ONLY,
+      });
+      assert.equal(handled, true);
+      assert.equal(streamCalls, 0);
+      assert.equal(plainOptions?.onText, undefined);
+      assert.match(answerText(client), /wokwi simulator/);
+      assert.doesNotMatch(client.posts.map((post: SlackPost) => post.text || "").join(" "), /must not reach Slack/);
+      void programId;
+    });
+  } finally {
+    answer.getAnswerOrChat = originalPlain;
+    answer.getAnswerOrChatStream = originalStream;
+    intent.classifyIntent = originalIntent;
+  }
+});
+
+test("grounding traces contain only verdict claims and selected evidence metadata", async () => {
+  const originalIntent = intent.classifyIntent;
+  const restoreAnswers = stubAnswers(async () => ({ source: "Docs", answer: "you can use wokwi simulator" }));
+  intent.classifyIntent = async () => intent.HELP_NEEDED;
+  try {
+    await withHelpProgram({ id: "trace-gated" }, async (programId: string, channel: string) => {
+      await respond.respond({
+        client: richClient(),
+        channel,
+        threadTs: "t-trace-gated",
+        userId: "U-trace-gated",
+        question: "how do i test my firmware?",
+        mode: respond.HELP_ONLY,
+      });
+      const rows = traceStore.forThread(programId, "t-trace-gated");
+      const grounding = rows.find((row: { stage: string }) => row.stage === "grounding");
+      const selected = rows.find((row: { stage: string }) => row.stage === "selected_evidence");
+      assert.deepEqual(Object.keys(grounding?.payload || {}).sort(), ["claims", "verdict"]);
+      assert.ok((grounding?.payload.claims || []).length > 0);
+      assert.deepEqual(Object.keys(selected?.payload || {}).sort(), ["evidence", "evidenceIds"]);
+    });
+  } finally {
+    restoreAnswers();
+    intent.classifyIntent = originalIntent;
+  }
+});
+
+test("a normal source answer invokes claim verification before sending", async () => {
+  const originalIntent = intent.classifyIntent;
+  const originalVerify = claimVerifier.verifyAnswer;
+  const restoreAnswers = stubAnswers(async () => ({ source: "Docs", answer: "you can use wokwi simulator" }));
+  let verifyCalls = 0;
+  claimVerifier.verifyAnswer = async (input: Parameters<typeof originalVerify>[0]) => {
+    verifyCalls += 1;
+    return originalVerify(input);
+  };
+  intent.classifyIntent = async () => intent.HELP_NEEDED;
+  try {
+    await withHelpProgram({ id: "verify-before-send" }, async (_programId: string, channel: string) => {
+      const client = richClient();
+      await respond.respond({
+        client,
+        channel,
+        threadTs: "t-verify-before-send",
+        userId: "U-verify-before-send",
+        question: "how do i test my firmware?",
+        mode: respond.HELP_ONLY,
+      });
+      assert.ok(verifyCalls > 0);
+      assert.match(answerText(client), /wokwi simulator/);
+    });
+  } finally {
+    claimVerifier.verifyAnswer = originalVerify;
     restoreAnswers();
     intent.classifyIntent = originalIntent;
   }
@@ -1091,7 +1271,7 @@ test("help channel hands an unclear question to a helper with the escalated unce
   });
 });
 
-test("a ping in the help channel gets the answer and still goes to a helper", async () => {
+test("an unsupported ping in the help channel stays fail-closed and goes to a helper", async () => {
   const originalIntent = intent.classifyIntent;
 
   const restoreAnswers = stubAnswers(async () => ({ source: null, answer: "you can use wokwi simulator" }));
@@ -1112,8 +1292,8 @@ test("a ping in the help channel gets the answer and still goes to a helper", as
 
       assert.equal(replied, true);
       const said = client.posts.map((p: SlackPost) => p.text || "").join(" ");
-      assert.match(said, /wokwi simulator/);
-      assert.doesNotMatch(said, /couldn't verify/);
+      assert.doesNotMatch(said, /wokwi simulator/);
+      assert.match(said, /couldn't verify/);
       const ticket = db.getTicketByThreadTs("t-help-firmware");
       assert.ok(ticket);
       assert.equal(ticket.status, "waiting_for_helper");
@@ -1209,14 +1389,13 @@ test("isGroundedAnswer correctly identifies grounded vs ungrounded answers", () 
   assert.equal(isGroundedAnswer({ source: "Program catalog", answer: "you should check the site" }), false);
   assert.equal(isGroundedAnswer({ source: "Program FAQ", answer: "suggest asking in the help channel" }), false);
   assert.equal(
-    isGroundedAnswer({
-      source: "Live FAQ",
-      answer: "Every hour of work submitted adds 20 minutes to the livestream timer.",
-    }),
+    isGroundedAnswer(
+      verifiedAnswer("Live FAQ", "Every hour of work submitted adds 20 minutes to the livestream timer.", "live"),
+    ),
     true,
   );
   assert.equal(
-    isGroundedAnswer({ source: "Live FAQ", answer: "Projects started or recorded before Live began are allowed." }),
+    isGroundedAnswer(verifiedAnswer("Live FAQ", "Projects started or recorded before Live began are allowed.", "live")),
     true,
   );
 });
@@ -1429,11 +1608,155 @@ test("rate limiting posts limit message but does not create tickets or leave stu
   assert.equal(ticket, null, "rate limiting must not open tickets");
   assert.match(client.calls.posts.join(" "), /slow down a sec/);
   assert.deepEqual(
-    client.calls.posts.filter((t: string) => t === "_thinking..._"),
+    client.calls.posts.filter((t: string) => t === reply.THINKING),
     [],
     "no placeholder posted",
   );
 });
+
+test("rate-limit notice failure still records one metric and final trace", async () => {
+  const rateLimit = require("./rateLimit");
+  const slackMessages = require("./slackMessages");
+  const originalCheck = rateLimit.check;
+  const originalSend = slackMessages.sendProgramMessage;
+  const originalRecordMetric = db.recordMetric;
+  const metrics: unknown[][] = [];
+  const threadTs = "t-rate-limit-failure";
+  const program = programs.forChannel("C1");
+  rateLimit.check = () => ({ allowed: false, reason: "limit" });
+  slackMessages.sendProgramMessage = async () => {
+    throw new Error("Slack unavailable");
+  };
+  db.recordMetric = (...args: unknown[]) => {
+    metrics.push(args);
+    return originalRecordMetric(...args);
+  };
+  try {
+    const replied = await respond.respond({
+      client: fakeClient(),
+      channel: "C1",
+      threadTs,
+      userId: "U-rate-limit-failure",
+      question: "pixie can you help?",
+      mode: respond.ALWAYS,
+    });
+    assert.equal(replied, false);
+  } finally {
+    rateLimit.check = originalCheck;
+    slackMessages.sendProgramMessage = originalSend;
+    db.recordMetric = originalRecordMetric;
+  }
+
+  assert.equal(metrics.filter(([kind]) => kind === "rate_limited").length, 1);
+  const finalAction = traceStore
+    .forThread(program.id, threadTs)
+    .find((row: { stage: string }) => row.stage === "final_action");
+  assert.deepEqual(finalAction?.payload, { action: "silence", reason: "rate_limited" });
+});
+
+test("same-thread turns serialize before the next provider call or placeholder", async () => {
+  await withHelpProgram({ id: "thread-queue" }, async (programId: string, channel: string) => {
+    const client = richClient();
+    const originalIntent = intent.classifyIntent;
+    const originalKnown = lookup.knownAnswer;
+    const originalAnswer = lookup.answerOrChat;
+    const started = deferred();
+    const release = deferred();
+    let calls = 0;
+    intent.classifyIntent = async () => intent.HELP_NEEDED;
+    lookup.knownAnswer = async () => null;
+    lookup.answerOrChat = async () => {
+      calls += 1;
+      if (calls === 1) {
+        started.resolve();
+        await release.promise;
+      }
+      return verifiedAnswer("Docs", "the verified answer", programId);
+    };
+
+    try {
+      const first = respond.respond({
+        client,
+        channel,
+        threadTs: "thread-queue-root",
+        messageTs: "thread-queue-message-1",
+        userId: "U-thread-1",
+        question: "first question",
+        mode: respond.ALWAYS,
+      });
+      await started.promise;
+      const second = respond.respond({
+        client,
+        channel,
+        threadTs: "thread-queue-root",
+        messageTs: "thread-queue-message-2",
+        userId: "U-thread-2",
+        question: "second question",
+        mode: respond.ALWAYS,
+      });
+      await Promise.resolve();
+      assert.equal(calls, 1);
+      assert.equal(client.posts.length, 0);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(client.posts.filter((post: SlackPost) => post.text === reply.THINKING).length, 1);
+      release.resolve();
+      await Promise.all([first, second]);
+      assert.equal(calls, 2);
+      assert.equal(client.posts.filter((post: SlackPost) => post.text === reply.THINKING).length, 1);
+    } finally {
+      intent.classifyIntent = originalIntent;
+      lookup.knownAnswer = originalKnown;
+      lookup.answerOrChat = originalAnswer;
+    }
+  });
+});
+
+test("late stream text after lookup failure cannot create another placeholder", async () => {
+  await withHelpProgram({ id: "late-stream" }, async (_programId: string, channel: string) => {
+    const client = richClient();
+    const originalIntent = intent.classifyIntent;
+    const originalKnown = lookup.knownAnswer;
+    const originalAnswer = lookup.answerOrChat;
+    let lateText: ((text: string) => void) | null = null;
+    intent.classifyIntent = async () => intent.HELP_NEEDED;
+    lookup.knownAnswer = async () => null;
+    lookup.answerOrChat = async (_question: string, _prompt: string, options: { onText?: (text: string) => void }) => {
+      lateText = options.onText || null;
+      throw new Error("provider failed");
+    };
+
+    try {
+      await assert.doesNotReject(() =>
+        respond.respond({
+          client,
+          channel,
+          threadTs: "late-stream-root",
+          userId: "U-late-stream",
+          question: "my board is broken",
+          mode: respond.ALWAYS,
+        }),
+      );
+      const postCount = client.posts.length;
+      lateText?.("late answer");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.equal(client.posts.length, postCount);
+    } finally {
+      intent.classifyIntent = originalIntent;
+      lookup.knownAnswer = originalKnown;
+      lookup.answerOrChat = originalAnswer;
+    }
+  });
+});
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 test("answer generation throwing still leaves an open, usable ticket in the thread", async () => {
   const db = require("./db");
@@ -1554,16 +1877,31 @@ function withHelpProgram(
   const programs = require("./programs");
   const saved = process.env.PIXIE_PROGRAMS_JSON;
   const id = overrides.id || "ticket-prog";
-  process.env.PIXIE_PROGRAMS_JSON = JSON.stringify([
-    { id, name: id, helpChannel: `C-${id}`, channels: [`C-${id}`], ...overrides },
-  ]);
+  const defaultSources = [{ name: "Docs", type: "text", content: SAFE_SOURCE_TEXT }];
+  const programConfig = {
+    id,
+    name: id,
+    helpChannel: `C-${id}`,
+    channels: [`C-${id}`],
+    sources: defaultSources,
+    ...overrides,
+  };
+  process.env.PIXIE_PROGRAMS_JSON = JSON.stringify([programConfig]);
   programs.invalidate();
+  for (const source of (programConfig.sources || []) as Array<{ name?: string; content?: unknown }>) {
+    if (source.name) {
+      const content = typeof source.content === "string" ? source.content : SAFE_SOURCE_TEXT;
+      db.saveSourceText(knowledge.sourceCacheKey(source) || source.name, content);
+    }
+  }
+  knowledge.invalidate();
   return Promise.resolve()
     .then(() => fn(id, `C-${id}`))
     .finally(() => {
       if (saved === undefined) delete process.env.PIXIE_PROGRAMS_JSON;
       else process.env.PIXIE_PROGRAMS_JSON = saved;
       programs.invalidate();
+      knowledge.invalidate();
     });
 }
 
@@ -1654,7 +1992,7 @@ test("grounded HELP_ONLY support still answers when tickets are disabled", async
       const client = richClient();
       const originalLookup = lookup.answerOrChat;
       const originalIntent = intent.classifyIntent;
-      lookup.answerOrChat = async () => ({ source: "Docs", answer: "export as PNG at native size" });
+      lookup.answerOrChat = async () => verifiedAnswer("Docs", "export as PNG at native size", programId);
       intent.classifyIntent = async () => intent.HELP_NEEDED;
       try {
         const handled = await respond.respond({
@@ -2554,7 +2892,7 @@ test("cache serves a grounded answer in help even when the classifier failed", a
   await withHelpProgram({ id: "charcache" }, async (programId: string, channel: string) => {
     const originalIntent = intent.classifyIntent;
     const originalKnown = lookup.knownAnswer;
-    lookup.knownAnswer = () => ({ source: "Docs", answer: "cached answer here" });
+    lookup.knownAnswer = () => verifiedAnswer("Docs", "cached answer here", programId);
     intent.classifyIntent = async () => null;
     try {
       const client = richClient();
@@ -2585,7 +2923,7 @@ test("active incidents bypass cache and model work, stay tenant-scoped, and stop
   let modelCalls = 0;
   lookup.knownAnswer = () => {
     cacheCalls += 1;
-    return { source: "Docs", answer: "cached answer" };
+    return verifiedAnswer("Docs", "cached answer", "incident-respond");
   };
   answer.getAnswerOrChat = async () => {
     modelCalls += 1;
@@ -2672,3 +3010,34 @@ test("active incidents bypass cache and model work, stay tenant-scoped, and stop
   }
 });
 export {};
+
+test("a link fetch failing after the placeholder appears deletes it and stops the spinner", async () => {
+  const client = fakeClient();
+  const originalIntent = intent.classifyIntent;
+  const originalFetch = link.fetchUrlContent;
+  intent.classifyIntent = async () => intent.HELP_NEEDED;
+  link.fetchUrlContent = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    throw new Error("fetch exploded");
+  };
+  try {
+    await assert.doesNotReject(() =>
+      respond.respond({
+        client,
+        channel: "C1",
+        threadTs: "t-link-fail",
+        userId: "U-link-fail",
+        question: "pixie, what does https://example.com/page say about export?",
+        mode: respond.ALWAYS,
+      }),
+    );
+    assert.ok(client.calls.posts.includes(reply.THINKING), "the placeholder was posted");
+    assert.equal(client.calls.deletes, 1, "the placeholder was deleted");
+    const updates = client.calls.updates.length;
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(client.calls.updates.length, updates, "no spinner updates after the failed turn");
+  } finally {
+    intent.classifyIntent = originalIntent;
+    link.fetchUrlContent = originalFetch;
+  }
+});

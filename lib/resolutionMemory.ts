@@ -161,15 +161,17 @@ function approveCandidate({
   const row = db.getLearnedFactById(id);
   if (!row) return { error: "candidate not found" };
   if (row.status !== CANDIDATE && row.status !== "pending") return { error: "only candidates can be approved here" };
-  if (edits.question || edits.answer || edits.category) {
-    const updateLearnedFact = db.updateLearnedFact as (factId: number, patch: Record<string, unknown>) => unknown;
-    updateLearnedFact(id, {
-      question: edits.question || null,
-      answer: edits.answer || null,
-      category: edits.category || null,
-    });
-  }
-  if (!learn.approve(id)) return { error: "approval failed" };
+  const approveWithEdits = db.approveLearnedFactWithEdits as (
+    factId: number,
+    patch: Record<string, unknown>,
+  ) => boolean;
+  const approvedNow = approveWithEdits(id, {
+    question: edits.question || null,
+    answer: edits.answer || null,
+    category: edits.category || null,
+  });
+  if (!approvedNow) return { error: "approval failed" };
+  learn.invalidateCorpus();
   const recordAudit = audit.record as (entry: Record<string, unknown>) => unknown;
   recordAudit({
     programId: row.program_id,
@@ -185,8 +187,8 @@ function approveCandidate({
 function rejectCandidate({ id, actorId }: { id: number; actorId: string | null }): Record<string, unknown> {
   const row = db.getLearnedFactById(id);
   if (!row) return { error: "candidate not found" };
-  if (row.status !== CANDIDATE && row.status !== "pending" && !(row.status === "approved" && row.auto_learned)) {
-    return { error: "only candidates can be rejected here" };
+  if (row.status !== CANDIDATE && row.status !== "pending" && row.status !== "approved") {
+    return { error: "only live knowledge can be rejected here" };
   }
   if (!db.setLearnedStatus(id, REJECTED)) return { error: "rejection failed" };
   require("./learn").invalidateCorpus();

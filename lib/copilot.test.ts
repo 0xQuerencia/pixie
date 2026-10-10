@@ -16,6 +16,7 @@ const knowledge = require("./knowledge");
 const lookup = require("./lookup");
 const copilot = require("./copilot");
 const api = require("./web/api");
+const claimVerifier = require("./claimVerifier");
 const { readSource } = require("./test-source");
 
 before(() => {
@@ -43,6 +44,25 @@ const BLOB = JSON.stringify([
     ],
   },
 ]);
+
+function verifiedDraft(answer: string) {
+  const evidence = [
+    {
+      id: "cp-evidence",
+      programId: "cp-hwy",
+      sourceName: "CP Highway Docs",
+      text: BLOB.includes(answer) ? answer : "Yes, PCBs from PCBWay are allowed for Highway builds.",
+      authority: "source",
+      kind: "source",
+    },
+  ];
+  return {
+    source: "CP Highway Docs",
+    answer,
+    evidence,
+    verification: claimVerifier.verifyAnswerSync({ programId: "cp-hwy", answer, evidence }),
+  };
+}
 
 async function withCorpus(fn: () => unknown) {
   const saved = process.env.PIXIE_PROGRAMS_JSON;
@@ -149,7 +169,7 @@ test("improveReply preserves facts and surfaces token changes", async () => {
 
 test("draftReply reports grounding honestly and never sends", async () => {
   const real = lookup.answerOrChat;
-  lookup.answerOrChat = async () => ({ source: "CP Highway Docs", answer: "Yes — allowed." });
+  lookup.answerOrChat = async () => verifiedDraft("Yes — allowed.");
   try {
     const res = await copilot.draftReply({ program: { id: "cp-hwy", name: "Highway" }, question: "pcbway?" });
     assert.equal(res.grounded, true);
@@ -217,7 +237,7 @@ test("copilot never sends — read-only helper surface", async () => {
 
   const before = db.handle().query("SELECT COUNT(*) AS n FROM tickets").get().n;
   const real = lookup.answerOrChat;
-  lookup.answerOrChat = async () => ({ source: "CP Highway Docs", answer: "draft text" });
+  lookup.answerOrChat = async () => verifiedDraft("draft text");
   try {
     const res = await copilot.draftReply({ program: { id: "cp-hwy", name: "Highway" }, question: "pcbway?" });
     assert.equal(res.draft, "draft text");

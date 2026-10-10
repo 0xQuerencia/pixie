@@ -2,9 +2,326 @@ const knowledge = require("./knowledge");
 const log = require("./log");
 const { config } = require("./config");
 
-const THINKING = "_thinking..._";
+const STREAMING_WORDS = [
+  "Accomplishing",
+  "Actioning",
+  "Actualizing",
+  "Architecting",
+  "Baking",
+  "Beaming",
+  "Beboppin'",
+  "Befuddling",
+  "Billowing",
+  "Blanching",
+  "Bloviating",
+  "Boogieing",
+  "Boondoggling",
+  "Booping",
+  "Bootstrapping",
+  "Brewing",
+  "Bunning",
+  "Burrowing",
+  "Calculating",
+  "Canoodling",
+  "Caramelizing",
+  "Cascading",
+  "Catapulting",
+  "Cerebrating",
+  "Channeling",
+  "Channelling",
+  "Choreographing",
+  "Churning",
+  "Clauding",
+  "Coalescing",
+  "Cogitating",
+  "Combobulating",
+  "Composing",
+  "Computing",
+  "Concocting",
+  "Considering",
+  "Contemplating",
+  "Cooking",
+  "Crafting",
+  "Creating",
+  "Crunching",
+  "Crystallizing",
+  "Cultivating",
+  "Deciphering",
+  "Deliberating",
+  "Determining",
+  "Dilly-dallying",
+  "Discombobulating",
+  "Doing",
+  "Doodling",
+  "Drizzling",
+  "Ebbing",
+  "Effecting",
+  "Elucidating",
+  "Embellishing",
+  "Enchanting",
+  "Envisioning",
+  "Evaporating",
+  "Fermenting",
+  "Fiddle-faddling",
+  "Finagling",
+  "Flambéing",
+  "Flibbertigibbeting",
+  "Flowing",
+  "Flummoxing",
+  "Fluttering",
+  "Forging",
+  "Forming",
+  "Frolicking",
+  "Frosting",
+  "Gallivanting",
+  "Galloping",
+  "Garnishing",
+  "Generating",
+  "Gesticulating",
+  "Germinating",
+  "Gitifying",
+  "Grooving",
+  "Gusting",
+  "Harmonizing",
+  "Hashing",
+  "Hatching",
+  "Herding",
+  "Honking",
+  "Hullaballooing",
+  "Hyperspacing",
+  "Ideating",
+  "Imagining",
+  "Improvising",
+  "Incubating",
+  "Inferring",
+  "Infusing",
+  "Ionizing",
+  "Jitterbugging",
+  "Julienning",
+  "Kneading",
+  "Leavening",
+  "Levitating",
+  "Lollygagging",
+  "Manifesting",
+  "Marinating",
+  "Meandering",
+  "Metamorphosing",
+  "Misting",
+  "Moonwalking",
+  "Moseying",
+  "Mulling",
+  "Mustering",
+  "Musing",
+  "Nebulizing",
+  "Nesting",
+  "Newspapering",
+  "Noodling",
+  "Nucleating",
+  "Orbiting",
+  "Orchestrating",
+  "Osmosing",
+  "Perambulating",
+  "Percolating",
+  "Perusing",
+  "Philosophising",
+  "Photosynthesizing",
+  "Pollinating",
+  "Pondering",
+  "Pontificating",
+  "Pouncing",
+  "Precipitating",
+  "Prestidigitating",
+  "Processing",
+  "Proofing",
+  "Propagating",
+  "Puttering",
+  "Puzzling",
+  "Quantumizing",
+  "Razzle-dazzling",
+  "Razzmatazzing",
+  "Recombobulating",
+  "Reticulating",
+  "Roosting",
+  "Ruminating",
+  "Sautéing",
+  "Scampering",
+  "Schlepping",
+  "Scurrying",
+  "Seasoning",
+  "Shenaniganing",
+  "Shimmying",
+  "Simmering",
+  "Skedaddling",
+  "Sketching",
+  "Slithering",
+  "Smooshing",
+  "Sock-hopping",
+  "Spelunking",
+  "Spinning",
+  "Sprouting",
+  "Stewing",
+  "Sublimating",
+  "Swirling",
+  "Swooping",
+  "Symbioting",
+  "Synthesizing",
+  "Tempering",
+  "Thinking",
+  "Thundering",
+  "Tinkering",
+  "Tomfoolering",
+  "Topsy-turvying",
+  "Transfiguring",
+  "Transmuting",
+  "Twisting",
+  "Undulating",
+  "Unfurling",
+  "Unravelling",
+  "Vibing",
+  "Waddling",
+  "Wandering",
+  "Warping",
+  "Whatchamacalliting",
+  "Whirlpooling",
+  "Whirring",
+  "Whisking",
+  "Wibbling",
+  "Working",
+  "Wrangling",
+  "Zesting",
+  "Zigzagging",
+] as const;
+
+const STREAMING_WORD_INTERVAL_MS = 900;
+const THINKING = `_${STREAMING_WORDS[0]}..._`;
 
 const STREAM_UPDATE_MS = 350;
+const CHAT_UPDATE_TIMEOUT_MS = 2000;
+const MAX_SPINNER_RETRY_AFTER_MS = 30 * 1000;
+
+type ThinkingSpinner = { stop: () => Promise<boolean> };
+const thinkingSpinners = new Map<string, ThinkingSpinner>();
+const quarantinedPlaceholders = new Set<string>();
+
+function spinnerKey(channel: string, ts: string) {
+  return `${channel}\u0000${ts}`;
+}
+
+async function stopThinkingSpinner(channel: string, ts: string | null | undefined): Promise<boolean> {
+  if (!ts) return false;
+  const key = spinnerKey(channel, ts);
+  const spinner = thinkingSpinners.get(key);
+  if (!spinner) return false;
+  thinkingSpinners.delete(key);
+  try {
+    const timedOut = await spinner.stop();
+    if (timedOut) quarantinedPlaceholders.add(key);
+    return timedOut;
+  } catch (error: unknown) {
+    log.debug("respond", `thinking spinner stop failed: ${errorMessage(error)}`);
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function retryAfterMs(error: unknown): number | null {
+  if (!isRecord(error)) return null;
+  const data = isRecord(error.data) ? error.data : null;
+  const headers = isRecord(error.headers) ? error.headers : null;
+  let value = error.retryAfter;
+  if (value === undefined) value = error.retry_after;
+  if (value === undefined && data) value = data.retryAfter;
+  if (value === undefined && data) value = data.retry_after;
+  if (value === undefined && headers) {
+    const header = Object.keys(headers).find((key) => key.toLowerCase() === "retry-after");
+    if (header) value = headers[header];
+  }
+  if (value === null || value === undefined || value === "") return null;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.min(seconds * 1000, MAX_SPINNER_RETRY_AFTER_MS);
+}
+
+class ChatUpdateTimeout extends Error {
+  constructor() {
+    super(`chat.update timed out after ${CHAT_UPDATE_TIMEOUT_MS}ms`);
+    this.name = "ChatUpdateTimeout";
+  }
+}
+
+async function boundedChatUpdate(
+  client: SlackClient,
+  payload: import("@slack/web-api").ChatUpdateArguments,
+): Promise<void> {
+  const update = Promise.resolve().then(() => client.chat.update(payload));
+  let timeout: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new ChatUpdateTimeout()), CHAT_UPDATE_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([update, deadline]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isChatUpdateTimeout(error: unknown): boolean {
+  return error instanceof ChatUpdateTimeout;
+}
+
+async function startThinkingSpinner(client: SlackClient, channel: string, ts: string) {
+  if (!client?.chat || typeof client.chat.update !== "function") return;
+
+  const key = spinnerKey(channel, ts);
+  const previous = thinkingSpinners.get(key);
+  if (previous) {
+    try {
+      if (await previous.stop()) quarantinedPlaceholders.add(key);
+    } catch (error: unknown) {
+      log.debug("respond", `previous thinking spinner stop failed: ${errorMessage(error)}`);
+    }
+  }
+
+  let wordIndex = 0;
+  let inFlight: Promise<void> | null = null;
+  let active = true;
+  let blockedUntil = 0;
+  const tick = () => {
+    if (!active || inFlight || Date.now() < blockedUntil) return;
+    wordIndex = (wordIndex + 1) % STREAMING_WORDS.length;
+    inFlight = boundedChatUpdate(client, { channel, ts, text: `_${STREAMING_WORDS[wordIndex]}..._` })
+      .catch((error: unknown) => {
+        if (isChatUpdateTimeout(error)) {
+          active = false;
+          clearInterval(timer);
+          quarantinedPlaceholders.add(key);
+          log.debug("respond", `thinking spinner update timed out after ${CHAT_UPDATE_TIMEOUT_MS}ms`);
+          return;
+        }
+        const wait = retryAfterMs(error);
+        if (wait !== null) blockedUntil = Math.max(blockedUntil, Date.now() + wait);
+        log.debug("respond", `thinking spinner update failed: ${errorMessage(error)}`);
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+  };
+  const timer = setInterval(tick, STREAMING_WORD_INTERVAL_MS);
+
+  thinkingSpinners.set(key, {
+    stop: async () => {
+      active = false;
+      clearInterval(timer);
+      const pending = inFlight;
+      if (!pending) return false;
+      await pending;
+      return quarantinedPlaceholders.has(key);
+    },
+  });
+}
 
 const programs = require("./programs");
 import type { Program, ProgramSource, SlackClient } from "./types";
@@ -70,10 +387,6 @@ function withReplySignature(text: string, program: ProgramLike | null) {
   const body = String(text).replace(/\s+$/, "");
   if (body === sig || body.endsWith(`\n${sig}`)) return body;
   return `${body}\n\n${sig}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function plainDashesInBlocks<T extends object>(blocks: T[]): T[];
@@ -153,8 +466,12 @@ function blocksFor(text: string): ReplyBlock[] {
 }
 
 function postThinking(client: SlackClient, channel: string, threadTs: string, program: ProgramLike | null = null) {
-  return sendProgramMessage({ client, program, channel, threadTs, text: THINKING })
-    .then((res: { ts?: string }) => res.ts || null)
+  return sendProgramMessage({ client, program, channel, threadTs, text: THINKING, retryAmbiguous: false })
+    .then(async (res: { ts?: string }) => {
+      const ts = res.ts || null;
+      if (ts) await startThinkingSpinner(client, channel, ts);
+      return ts;
+    })
     .catch((error: unknown) => {
       log.debug("respond", `could not post placeholder: ${errorMessage(error)}`);
       return null;
@@ -238,35 +555,68 @@ function makeStreamWriter({
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastAt = 0;
   let inFlight = Promise.resolve();
+  let closed = false;
 
   const flush = () => {
     timer = null;
+    if (closed) return;
     lastAt = Date.now();
     const cleanLatest = stripReasoning(latest);
     if (!cleanLatest || cleanLatest === sent) return;
     sent = cleanLatest;
     const text = sent;
     inFlight = inFlight
-      .then(() => ensurePlaceholder())
-      .then((ts) => {
-        if (!ts) return null;
-        if (threadTs && newlySilenced(threadTs, silencedBefore)) return null;
-        return client.chat.update({ channel, ts, text: plainDashes(text) });
+      .then(async () => {
+        if (closed) return null;
+        const ts = await ensurePlaceholder();
+        if (closed && ts) {
+          await discardPlaceholder(client, channel, ts);
+          return null;
+        }
+        return ts;
       })
-      .catch((error: unknown) => log.debug("respond", `stream update failed: ${errorMessage(error)}`));
+      .then(async (ts) => {
+        if (!ts) return null;
+        if (await stopThinkingSpinner(channel, ts)) return null;
+        if (closed) return null;
+        if (threadTs && newlySilenced(threadTs, silencedBefore)) return null;
+        try {
+          await boundedChatUpdate(client, { channel, ts, text: plainDashes(text) });
+        } catch (error: unknown) {
+          if (isChatUpdateTimeout(error)) {
+            quarantinedPlaceholders.add(spinnerKey(channel, ts));
+            close();
+          }
+          throw error;
+        }
+        return null;
+      })
+      .catch((error: unknown) => {
+        if (isChatUpdateTimeout(error)) {
+          log.debug("respond", `stream update timed out after ${CHAT_UPDATE_TIMEOUT_MS}ms`);
+        } else {
+          log.debug("respond", `stream update failed: ${errorMessage(error)}`);
+        }
+      });
+  };
+  const close = () => {
+    closed = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
   };
 
   return {
     write(text: string) {
+      if (closed) return;
       latest = text;
       if (timer) return;
       timer = setTimeout(flush, Math.max(0, STREAM_UPDATE_MS - (Date.now() - lastAt)));
     },
+    close,
     async settle() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      close();
       await inFlight;
     },
   };
@@ -334,6 +684,7 @@ async function finalize(
     ...(cleanBlocks ? { blocks: plainDashesInBlocks(cleanBlocks) } : {}),
   };
   const placeholderTs = await placeholder;
+  await stopThinkingSpinner(channel, placeholderTs);
 
   const suppressed = decidePostSuppression({ program, threadTs, placeholderTs, silencedBefore });
   if (suppressed) {
@@ -341,25 +692,36 @@ async function finalize(
     return null;
   }
 
-  if (placeholderTs) {
+  const placeholderIsQuarantined = Boolean(
+    placeholderTs && quarantinedPlaceholders.has(spinnerKey(channel, placeholderTs)),
+  );
+  if (placeholderTs && !placeholderIsQuarantined) {
     try {
-      await client.chat.update({ ...payload, ts: placeholderTs });
+      await boundedChatUpdate(client, { ...payload, ts: placeholderTs });
       return placeholderTs;
     } catch (error: unknown) {
+      if (isChatUpdateTimeout(error)) quarantinedPlaceholders.add(spinnerKey(channel, placeholderTs));
       log.debug("respond", `update failed, posting fresh: ${errorMessage(error)}`);
       await discardPlaceholder(client, channel, placeholderTs);
     }
+  } else if (placeholderTs) {
+    await discardPlaceholder(client, channel, placeholderTs);
   }
 
-  const res = await sendProgramMessage({
-    client,
-    program,
-    channel,
-    threadTs,
-    text: payload.text,
-    blocks: payload.blocks || null,
-  });
-  return res ? res.ts : null;
+  try {
+    const res = await sendProgramMessage({
+      client,
+      program,
+      channel,
+      threadTs,
+      text: payload.text,
+      blocks: payload.blocks || null,
+    });
+    return res ? res.ts : null;
+  } catch (error: unknown) {
+    log.warn("respond", `final answer post failed: ${errorMessage(error)}`);
+    return null;
+  }
 }
 
 async function discardPlaceholder(
@@ -369,7 +731,9 @@ async function discardPlaceholder(
 ) {
   try {
     const ts = await Promise.resolve(placeholder).catch(() => null);
-    if (!ts || !client?.chat?.delete) return;
+    if (!ts) return;
+    await stopThinkingSpinner(channel, ts);
+    if (!client?.chat?.delete) return;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await client.chat.delete({ channel, ts });
@@ -381,10 +745,12 @@ async function discardPlaceholder(
             errCode === "cant_delete_message" ||
             errCode === "compliance_exports_prevent_deletion"
           ) {
+            quarantinedPlaceholders.delete(spinnerKey(channel, ts));
             return;
           }
           throw new Error(errCode || "delete failed");
         }
+        quarantinedPlaceholders.delete(spinnerKey(channel, ts));
         return;
       } catch (error: unknown) {
         const code = error instanceof Error ? error.message : String(error);
@@ -394,11 +760,13 @@ async function discardPlaceholder(
           code === "cant_delete_message" ||
           code === "compliance_exports_prevent_deletion"
         ) {
+          quarantinedPlaceholders.delete(spinnerKey(channel, ts));
           return;
         }
         if (attempt < 2) {
           await new Promise<void>((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
         }
+        continue;
       }
     }
   } catch (_error: unknown) {}
@@ -480,5 +848,9 @@ export = {
   decidePostSuppression,
   silenceState,
   THINKING,
+  STREAMING_WORDS,
+  STREAMING_WORD_INTERVAL_MS,
   STREAM_UPDATE_MS,
+  CHAT_UPDATE_TIMEOUT_MS,
+  MAX_SPINNER_RETRY_AFTER_MS,
 };

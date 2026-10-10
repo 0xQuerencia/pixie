@@ -6,6 +6,7 @@ const { config } = require("./config");
 const learn = require("./learn");
 const teachThread = require("./teachThread");
 const commands = require("./commands");
+const traceStore = require("./pipeline/traceStore");
 const { parseForgetInput, parseId, adminOnlyShortcut, teachThreadShortcut } = commands;
 
 const ADMIN = "U0ADMIN";
@@ -324,6 +325,33 @@ test("/pixie ask parity — docs hit answers ephemerally, miss chats, error fall
     chat.getChatReply = origChat;
     config.slack.faqChannels = savedFaq;
   }
+});
+
+test("/pixie ask records a structured final_action trace without answer text", async () => {
+  const respond = require("./respond");
+  const programs = require("./programs");
+  const { config } = require("./config");
+  const savedFaq = config.slack.faqChannels;
+  config.slack.faqChannels = [...(savedFaq || []), "C1"];
+  const program = programs.forChannel("C1");
+  const originalLookup = respond.lookupAnswer;
+  respond.lookupAnswer = async () => ({ source: "Docs", answer: "private answer text" });
+  try {
+    await commands.askCommand({
+      command: { text: "how do i join", user_id: "U-trace-command", channel_id: "C1", thread_ts: "command-thread" },
+      ack: async () => {},
+      respond: async () => {},
+    });
+  } finally {
+    respond.lookupAnswer = originalLookup;
+    config.slack.faqChannels = savedFaq;
+  }
+
+  const rows = traceStore.forThread(program.id, "command-thread");
+  const finalAction = rows.find((row: { stage: string }) => row.stage === "final_action");
+  assert.ok(finalAction);
+  assert.equal(finalAction.payload.action, "reply");
+  assert.equal(JSON.stringify(finalAction.payload).includes("private answer text"), false);
 });
 
 test("/pixie-check dispatches to the deterministic path", async () => {

@@ -287,12 +287,12 @@ test("incident link/unlink/notify re-check the incident's program membership", a
     const incId = listed[0].id;
     assert.match(api.internalIncidentAction(incId, { action: "resolve", actorId: "U-stranger" }).error, /not a helper/);
     assert.match((await api.internalIncidentNotify(incId, { actorId: "U-stranger" })).error, /not a helper/);
-    const detail = api.internalIncidentDetail(incId);
+    const detail = api.internalIncidentDetail("hwy", incId);
     assert.ok(detail.incident && Array.isArray(detail.tickets));
-    const affected = api.internalIncidentAffected(incId, {});
+    const affected = api.internalIncidentAffected("hwy", incId, {});
     assert.ok(typeof affected.total === "number" && Array.isArray(affected.reports));
   } else {
-    const detail = api.internalIncidentDetail(999999999);
+    const detail = api.internalIncidentDetail("hwy", 999999999);
     assert.match(detail.error, /not found/);
   }
 });

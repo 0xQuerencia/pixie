@@ -13,8 +13,8 @@ before(() => {
   db.open(":memory:");
 });
 
-function setup(id) {
-  db.saveProgram({ id, name: id, posture: "active", helpChannel: `C-${id}`, channels: [`C-${id}`], learning: "auto" });
+function setup(id, learning = "auto") {
+  db.saveProgram({ id, name: id, posture: "active", helpChannel: `C-${id}`, channels: [`C-${id}`], learning });
   for (const userId of ["U-alice", "U-bob"]) {
     db.syncHelper({ programId: id, userId, source: "test", role: "helper" });
   }
@@ -74,8 +74,37 @@ test("a handoff resolution credits, summarizes and teaches as the helper who ans
     assert.equal(helperRoute.recommend({ programId, category: "review", limit: 1 })[0].userId, "U-bob");
     assert.match(db.getResolutionSummary(ticket.id).resolution_summary, /queue/);
     const fact = db.learnedFactForTicket(ticket.id);
-    assert.equal(fact.status, "approved");
+    assert.equal(fact.status, "candidate");
     assert.equal(fact.resolver_id, "U-bob");
+  } finally {
+    restore();
+  }
+});
+
+test("both learning modes keep pipeline proposals reviewable", async () => {
+  const cases = [
+    { id: "flow-learning-auto", learning: "auto" },
+    { id: "flow-learning-review", learning: "review" },
+  ];
+  const restore = stubModel({
+    problem: "how long does review take",
+    solution: "Reviews take about 7 days right now.",
+    category: "review",
+  });
+  try {
+    for (const { id, learning } of cases) {
+      setup(id, learning);
+      const ticket = openTicket(id, "learning", "How long does review take?");
+      tickets.noteThreadActivity({ channel: `C-${id}`, threadTs: ticket.thread_ts, userId: "U-bob" });
+      await resolveAndSettle(ticket, "U-bob", "Reviews take about 7 days right now.");
+
+      const fact = db.learnedFactForTicket(ticket.id);
+      assert.equal(fact.status, "candidate");
+      assert.equal(
+        db.approvedFacts(20, id).some((row) => row.question === fact.question),
+        false,
+      );
+    }
   } finally {
     restore();
   }
@@ -109,9 +138,9 @@ test("a newer overlapping answer supersedes the older learned fact", async () =>
     await resolveAndSettle(second, "U-alice", "Reviews take about 14 days because the queue is backed up.");
 
     assert.equal(db.learnedFactForTicket(first.id).status, "superseded");
-    const approved = db.approvedFacts(20, programId);
-    assert.equal(approved.length, 1);
-    assert.match(approved[0].answer, /14 days/);
+    const candidates = db.listReviewableLearnedFacts(programId);
+    assert.equal(candidates.length, 1);
+    assert.match(candidates[0].answer, /14 days/);
   } finally {
     restore();
   }
@@ -133,7 +162,7 @@ test("a reopened ticket resolved again still reaches the learning step", async (
     await resolveAndSettle(ticket, "U-bob", "Yes, resubmit from the project page.");
 
     assert.equal(db.getResolutionSummary(ticket.id).resolution_summary, "An earlier summary from a first resolution.");
-    assert.equal(db.learnedFactForTicket(ticket.id).status, "approved");
+    assert.equal(db.learnedFactForTicket(ticket.id).status, "candidate");
   } finally {
     restore();
   }

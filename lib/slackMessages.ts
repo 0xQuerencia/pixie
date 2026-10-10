@@ -97,6 +97,7 @@ async function sendProgramMessage({
   threadTs = null,
   text,
   blocks = null,
+  retryAmbiguous = true,
 }: {
   client: MessageClient;
   program?: Program | null;
@@ -104,6 +105,7 @@ async function sendProgramMessage({
   threadTs?: string | null;
   text?: string;
   blocks?: unknown[] | null;
+  retryAmbiguous?: boolean;
 }): Promise<SendResult> {
   if (!client || !client.chat || typeof client.chat.postMessage !== "function") {
     throw new Error("slack client unavailable");
@@ -132,7 +134,13 @@ async function sendProgramMessage({
     } catch (err) {
       const error = (err && typeof err === "object" ? err : {}) as SlackError;
       const code = error.code || (error.data && error.data.error);
-      if (useBrand && (code === "invalid_arguments" || code === "not_allowed" || code === "missing_scope")) {
+      const brandingRejected =
+        useBrand && (code === "invalid_arguments" || code === "not_allowed" || code === "missing_scope");
+      if (!retryAmbiguous && !brandingRejected) {
+        recordSendFailure(program, error);
+        throw err;
+      }
+      if (brandingRejected) {
         if (attempt >= MAX_ATTEMPTS - 1) {
           recordSendFailure(program, error);
           throw err;
@@ -146,6 +154,10 @@ async function sendProgramMessage({
         throw err;
       }
       const wait = retryAfterMs(error);
+      if (!retryAmbiguous && wait === null) {
+        recordSendFailure(program, error);
+        throw err;
+      }
       if (wait !== null && attempt < MAX_ATTEMPTS - 1) {
         await sleep(wait);
         continue;

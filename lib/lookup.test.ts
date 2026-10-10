@@ -175,6 +175,54 @@ test("fixture E: a matched source authorizes only the exact number it contains, 
   }
 });
 
+test("an unknown source is rejected even for a non-regex program question", () => {
+  const prog = { id: "acme", sources: [{ name: "Acme Docs", type: "text" }] };
+  assert.equal(
+    lookup.exactClaimAllowed(
+      { source: "Foreign Docs", answer: "Acme is open to everyone." },
+      prog,
+      "what is Acme?",
+      "Foreign Docs\nAcme is open to everyone.",
+    ),
+    false,
+  );
+});
+
+test("fixture claims cannot bypass the production grounding boundary", () => {
+  const prog = { id: "acme", sources: [{ name: "Acme Docs", type: "text" }] };
+  assert.equal(
+    lookup.exactClaimAllowed(
+      {
+        source: "Acme Docs",
+        answer: "The grant pays five hundred dollars.",
+        fixtureClaims: ["The grant pays five hundred dollars."],
+      },
+      prog,
+      "what is the grant amount?",
+      "Acme Docs\nGrant amounts vary by tier.",
+    ),
+    false,
+  );
+});
+
+test("policy answers with no selected evidence are rejected", async () => {
+  const knowledge = require("./knowledge");
+  const original = knowledge.sourceEligibility;
+  knowledge.sourceEligibility = () => ({ exactClaimsAllowed: true, authority: "static" });
+  try {
+    const result = await lookup.applyGroundingBoundaryAsync(
+      { source: "Acme Docs", answer: "I don't know." },
+      { id: "acme", sources: [{ name: "Acme Docs", type: "text" }] },
+      "is AI allowed?",
+      "",
+      [],
+    );
+    assert.equal(result, null);
+  } finally {
+    knowledge.sourceEligibility = original;
+  }
+});
+
 test("numericClaimsGrounded rejects invented digit-bearing claims and allows ones the corpus actually states", () => {
   assert.equal(
     lookup.numericClaimsGrounded("your project has an 80% chance of passing", "nothing here about odds"),
@@ -324,7 +372,7 @@ test("cache key includes the program (no cross-program leakage)", () => {
   }
 });
 
-test("an end-date question reaches retrieval and the answer model, not a canned reply", async () => {
+test("an end-date question reaches retrieval and rejects an unconfigured answer source", async () => {
   const knowledge = require("./knowledge");
   const answer = require("./answer");
   const orig = { ctx: knowledge.getContext, ans: answer.getAnswerOrChat };
@@ -341,10 +389,32 @@ test("an end-date question reaches retrieval and the answer model, not a canned 
   try {
     const result = await lookup.answerOrChat("when does it end?", "", { program: prog, skipCache: true });
     assert.deepEqual(seen, ["retrieval", "answer"]);
-    assert.doesNotMatch(result.answer, /4 months|No official/);
+    assert.equal(result, null);
   } finally {
     knowledge.getContext = orig.ctx;
     answer.getAnswerOrChat = orig.ans;
   }
 });
 export {};
+
+test("general chat cannot assert program policy without evidence", async () => {
+  const program = { id: "program-1", name: "Program 1", sources: [] };
+  const result = await lookup.applyGroundingBoundaryAsync(
+    { source: null, answer: "Refunds are prohibited." },
+    program,
+    "tell me something",
+    "",
+    [],
+    { allowUngroundedChat: true },
+  );
+  assert.equal(result, null);
+  const casual = await lookup.applyGroundingBoundaryAsync(
+    { source: null, answer: "Bake the cookies at 180C for ten minutes." },
+    program,
+    "cookie recipe",
+    "",
+    [],
+    { allowUngroundedChat: true },
+  );
+  assert.ok(casual);
+});

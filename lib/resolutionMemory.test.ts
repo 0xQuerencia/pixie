@@ -126,6 +126,41 @@ test("approval enters the corpus with verification; rejection excludes", async (
   assert.ok(!factsAfter.includes("bad idea"));
 });
 
+test("legacy auto-learned facts stay in the review queue until explicit approval", () => {
+  const id = db
+    .handle()
+    .query(
+      "INSERT INTO learned_facts (question, answer, status, source_ts, program_id, verified_at, auto_learned, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
+    )
+    .run(
+      "legacy resolution question",
+      "legacy resolution answer",
+      "approved",
+      "legacy-resolution-source",
+      "rm-hwy",
+      Date.now(),
+      Date.now(),
+    ).lastInsertRowid;
+
+  assert.equal(
+    memory.listCandidates("rm-hwy").some((row) => row.id === id),
+    true,
+  );
+  assert.equal(
+    db.approvedFacts(200, "rm-hwy").some((row) => row.question === "legacy resolution question"),
+    false,
+  );
+
+  db.handle().query("UPDATE learned_facts SET status = ?, verified_at = NULL WHERE id = ?").run("candidate", id);
+  const approval = memory.approveCandidate({ id, actorId: "U-helper" });
+  assert.equal(approval.ok, true);
+  assert.equal(db.handle().query("SELECT auto_learned FROM learned_facts WHERE id = ?").get(id).auto_learned, 0);
+  assert.equal(
+    db.approvedFacts(200, "rm-hwy").some((row) => row.question === "legacy resolution question"),
+    true,
+  );
+});
+
 test("candidate API is tenant- and actor-gated", async () => {
   const stranger = await api.internalKnowledgePropose("rm-hwy", { actorId: "U-stranger", ticketId: 1 });
   assert.match(stranger.error, /not a helper/);
@@ -161,3 +196,51 @@ test("listCandidates is scoped and bounded", () => {
 });
 export {};
 import type { TestDb, TestMemory } from "./test.types";
+
+test("a stale edit cannot change a fact after another reviewer approved it", () => {
+  const raw = db as unknown as Record<string, (...args: unknown[]) => any>;
+  const id = raw.addLearnedFact({
+    question: "q",
+    answer: "a",
+    status: "candidate",
+    sourceTs: "ar-1",
+    programId: "approval-race",
+  });
+  assert.equal((memory as any).approveCandidate({ id, actorId: "U-p2" }).ok, true);
+  assert.equal(raw.updateLearnedFact(id, { answer: "late edit" }), false);
+  assert.equal(raw.getLearnedFactById(id).answer, "a");
+  const stale = (memory as any).approveCandidate({ id, actorId: "U-p1", edits: { answer: "x" } });
+  assert.equal(stale.error, "only candidates can be approved here");
+  assert.equal(raw.getLearnedFactById(id).answer, "a");
+});
+
+test("an unowned quarantined candidate stays reachable in the legacy review queue", () => {
+  const raw = db as unknown as Record<string, (...args: unknown[]) => any>;
+  const id = raw.addLearnedFact({
+    question: "uq",
+    answer: "ua",
+    status: "candidate",
+    sourceTs: "uq-1",
+    programId: null,
+  });
+  const ids = raw.listLearnedFacts("pending", 100, null).map((row: { id: number }) => row.id);
+  assert.ok(ids.includes(id));
+});
+
+test("an organizer can retire an approved fact and it leaves trusted retrieval", () => {
+  const raw = db as unknown as Record<string, (...args: unknown[]) => any>;
+  const id = raw.addLearnedFact({
+    question: "rq",
+    answer: "ra",
+    status: "candidate",
+    sourceTs: "rt-1",
+    programId: "retire-p",
+  });
+  assert.equal((memory as any).approveCandidate({ id, actorId: "U1" }).ok, true);
+  assert.ok(raw.approvedFacts(50, "retire-p").some((row: { question: string }) => row.question === "rq"));
+  assert.equal((memory as any).rejectCandidate({ id, actorId: "U1" }).ok, true);
+  assert.equal(
+    raw.approvedFacts(50, "retire-p").some((row: { question: string }) => row.question === "rq"),
+    false,
+  );
+});

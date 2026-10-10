@@ -3,6 +3,7 @@ const https = require("https");
 const log = require("./log");
 const db = require("./db");
 const crypto = require("crypto");
+const { AsyncLocalStorage } = require("node:async_hooks");
 import type { ProviderTier } from "./types";
 
 interface ChatMessage {
@@ -21,6 +22,7 @@ interface Telemetry {
   programId?: string | null;
   channel?: string | null;
   requestId?: string;
+  noTelemetry?: boolean;
 }
 interface CompletionOptions {
   baseUrl: string;
@@ -89,6 +91,15 @@ const MAX_ATTEMPTS = 3;
 const BASE_BACKOFF_MS = 400;
 
 const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 20 });
+const telemetryContext = new AsyncLocalStorage();
+
+function telemetrySuppressed() {
+  return telemetryContext.getStore() === true;
+}
+
+function withNoTelemetry<T>(work: () => T | Promise<T>): T | Promise<T> {
+  return telemetryContext.run(true, work);
+}
 
 function isRetryableStatus(status: number | undefined) {
   return status === 408 || status === 429 || (status !== undefined && status >= 500 && status < 600);
@@ -129,6 +140,7 @@ function costFor(model: string, usage: Usage) {
 }
 
 function recordUsage(options: CompletionOptions, result: ResultMeta = {}) {
+  if (options.telemetry?.noTelemetry || telemetrySuppressed()) return;
   const context = options.telemetry || {};
   const usage: Usage = result.usage || {
     promptTokens: null,
@@ -548,6 +560,8 @@ export = {
   isRetryableStatus,
   isRetryableError,
   stripThinking,
+  telemetrySuppressed,
+  withNoTelemetry,
   keepAliveAgent,
   MAX_ATTEMPTS,
   DEFAULT_TIMEOUT_MS,

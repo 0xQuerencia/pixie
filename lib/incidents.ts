@@ -4,6 +4,7 @@ import gapClusters = require("./gapClusters");
 import programs = require("./programs");
 import slackMessages = require("./slackMessages");
 import retrieve = require("./retrieve");
+import semanticSimilarity = require("./semanticSimilarity");
 import type { SlackClient } from "./types";
 
 interface Row {
@@ -33,6 +34,15 @@ const INCIDENT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 function similarityScore(a: string, b: string): number {
   return gapClusters.pairOverlap(a, b);
+}
+
+// Incident matching is intentionally more forgiving than duplicate-ticket
+// matching. People describe the same outage with different verbs ("blank
+// page", "redirects back to login", "can't sign in"), so use the shared
+// semantic scorer only after the outage gate below has established that this
+// is an operational report.
+function incidentSimilarityScore(a: string, b: string): number {
+  return semanticSimilarity.score(a, b);
 }
 
 function isSimilar(a: string, b: string, threshold = SIMILARITY_THRESHOLD): boolean {
@@ -78,7 +88,9 @@ function pickBestIncident(question: string, active: Row[]): Row | null {
 }
 
 const OUTAGE_LANGUAGE =
-  /\b(?:down|offline|unavailable|broken|inaccessible|failing|failed|failure|error|issue|problem|outage|crash(?:ing)?|500)\b|\b(?:blank(?:\s+page)?|page\s+is\s+blank|not\s+(?:loading|load|working)|(?:isn'?t|is\s+not|can not|cannot|cant|can't|won't|wont|unable\s+to)\s+(?:load|open|access|reach|work))\b/i;
+  /\b(?:down|offline|unavailable|broken|inaccessible|failing|failed|failure|error|issue|problem|outage|crash(?:ing)?|500)\b|\b(?:blank(?:\s+page)?|page\s+is\s+blank|redirect(?:s|ed)?(?:\s+\w+){0,2}\s+back\s+to\s+(?:the\s+)?login|sends?\s+me\s+back\s+to\s+(?:the\s+)?login|can(?:not|'t|t)\s+sign\s*[- ]?in|login\s+(?:is\s+)?(?:broken|failing)|not\s+(?:loading|load|working)|(?:isn'?t|is\s+not|can not|cannot|cant|can't|won't|wont|unable\s+to)\s+(?:load|open|access|reach|work|sign\s*[- ]?in))\b/i;
+const DIRECT_OUTAGE_LANGUAGE =
+  /\b(?:down|offline|unavailable|broken|inaccessible|failing|failed|failure|error|outage|crash(?:ing)?|500)\b|\b(?:blank(?:\s+page)?|page\s+is\s+blank|redirect(?:s|ed)?(?:\s+\w+){0,2}\s+back\s+to\s+(?:the\s+)?login|sends?\s+me\s+back\s+to\s+(?:the\s+)?login|can(?:not|'t|t)\s+sign\s*[- ]?in|login\s+(?:is\s+)?(?:broken|failing)|not\s+(?:loading|load|working)|(?:isn'?t|is\s+not|can not|cannot|cant|can't|won't|wont|unable\s+to)\s+(?:load|open|access|reach|work|sign\s*[- ]?in))\b/i;
 const ACCESS_LANGUAGE = /\b(?:site|website|webpage|page|portal|app|service|dashboard|load|open|access|reach)\b/i;
 const INCIDENT_NOISE = new Set([
   "down",
@@ -103,7 +115,31 @@ const INCIDENT_NOISE = new Set([
   "currently",
   "right",
   "now",
+  "site",
+  "website",
+  "webpage",
+  "page",
+  "portal",
+  "app",
+  "service",
+  "dashboard",
+  "people",
+  "user",
+  "users",
+  "everyone",
+  "anything",
+  "something",
+  "too",
+  "problem",
+  "issue",
+  "cant",
+  "cannot",
+  "wont",
+  "won",
+  "unable",
 ]);
+const NEGATED_OUTAGE =
+  /\b(?:not|never|isn't|isnt|no\s+longer)\s+(?:currently\s+)?(?:down|offline|unavailable|broken|inaccessible|failing|failed|working|loading|load|open|access|reachable)\b/i;
 
 function incidentTerms(text: unknown): Set<string> {
   const raw = String(text || "").toLowerCase();
@@ -112,23 +148,94 @@ function incidentTerms(text: unknown): Set<string> {
   return terms;
 }
 
+function isNegatedOutage(text: string): boolean {
+  return NEGATED_OUTAGE.test(text);
+}
+
+function incidentConcreteTerms(text: unknown): Set<string> {
+  const terms = incidentTerms(text);
+  terms.delete("incident_service");
+  return terms;
+}
+
+function isGenericOutageReport(text: string): boolean {
+  return !isNegatedOutage(text) && incidentTerms(text).size === 1 && incidentTerms(text).has("incident_service");
+}
+
 function incidentSimilarity(question: string, incident: Row): number {
-  if (!OUTAGE_LANGUAGE.test(String(question || ""))) return 0;
+  const questionText = String(question || "");
+  if (
+    !OUTAGE_LANGUAGE.test(questionText) ||
+    !DIRECT_OUTAGE_LANGUAGE.test(questionText) ||
+    isNegatedOutage(questionText)
+  ) {
+    return 0;
+  }
   const texts = [incident.title, incident.description].filter(Boolean);
   let score = 0;
   for (const text of texts) {
-    if (!OUTAGE_LANGUAGE.test(String(text || ""))) continue;
-    const questionTerms = incidentTerms(question);
-    const incidentTermsForText = incidentTerms(text);
-    const namesAffectedThing = [...questionTerms].some((term) => incidentTermsForText.has(term));
-    if (!namesAffectedThing) continue;
-    const wordingScore = similarityScore(question, String(text));
-    const genericServiceMatch = questionTerms.has("incident_service") && incidentTermsForText.has("incident_service");
-    if (wordingScore >= SIMILARITY_THRESHOLD || genericServiceMatch) {
-      score = Math.max(score, wordingScore, genericServiceMatch ? 0.5 : 0);
+    const incidentText = String(text || "");
+    if (!DIRECT_OUTAGE_LANGUAGE.test(incidentText) || isNegatedOutage(incidentText)) continue;
+    const questionTerms = incidentConcreteTerms(questionText);
+    const incidentTermsForText = incidentConcreteTerms(incidentText);
+    const sharedConcreteTerm = [...questionTerms].some((term) => incidentTermsForText.has(term));
+    const wordingScore = incidentSimilarityScore(question, String(text));
+    const genericServiceMatch =
+      isGenericOutageReport(questionText) && incidentTerms(incidentText).has("incident_service");
+    if (sharedConcreteTerm || (genericServiceMatch && wordingScore >= SIMILARITY_THRESHOLD)) {
+      score = Math.max(score, wordingScore, SIMILARITY_THRESHOLD);
     }
   }
   return score;
+}
+
+function incidentClusterQuestions(questions: string[], threshold = SIMILARITY_THRESHOLD): string[][] {
+  const parents = questions.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parents[root] !== root) root = parents[root];
+    while (parents[index] !== index) {
+      const next = parents[index];
+      parents[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number) => {
+    const a = find(left);
+    const b = find(right);
+    if (a !== b) parents[b] = a;
+  };
+
+  for (let left = 0; left < questions.length; left += 1) {
+    for (let right = left + 1; right < questions.length; right += 1) {
+      const leftOutage = DIRECT_OUTAGE_LANGUAGE.test(questions[left]);
+      const rightOutage = DIRECT_OUTAGE_LANGUAGE.test(questions[right]);
+      if (leftOutage && rightOutage && !isNegatedOutage(questions[left]) && !isNegatedOutage(questions[right])) {
+        const leftTerms = incidentConcreteTerms(questions[left]);
+        const rightTerms = incidentConcreteTerms(questions[right]);
+        const sharedConcreteTerm = [...leftTerms].some((term) => rightTerms.has(term));
+        const genericService =
+          (isGenericOutageReport(questions[left]) || isGenericOutageReport(questions[right])) &&
+          incidentTerms(questions[left]).has("incident_service") &&
+          incidentTerms(questions[right]).has("incident_service");
+        const similar = incidentSimilarityScore(questions[left], questions[right]);
+        if ((sharedConcreteTerm || genericService) && similar >= threshold) union(left, right);
+      } else if (!leftOutage && !rightOutage && similarityScore(questions[left], questions[right]) >= threshold) {
+        // Preserve the existing duplicate-question burst behavior for ordinary
+        // support gaps; semantic outage grouping above is the additional gate.
+        union(left, right);
+      }
+    }
+  }
+
+  const groups = new Map<number, string[]>();
+  questions.forEach((question, index) => {
+    const root = find(index);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root)!.push(question);
+  });
+  return [...groups.values()];
 }
 
 function burstConfidence(count: number): number {
@@ -272,7 +379,13 @@ function suggestDuplicates({
   return { candidates: rankDuplicateCandidates(question, rows, ticketId, limit) };
 }
 
-function getIncident(id: number): Row | null {
+function getIncident(id: number, programId?: string | null): Row | null {
+  if (programId !== undefined) {
+    return db
+      .handle()
+      .query("SELECT * FROM program_incidents WHERE id = ? AND program_id = ?")
+      .get(id, programId) as Row | null;
+  }
   return db.handle().query("SELECT * FROM program_incidents WHERE id = ?").get(id) as Row | null;
 }
 
@@ -289,7 +402,19 @@ function listIncidents(programId: string, status: string | null = null, limit = 
     .all(programId, limit) as Row[];
 }
 
-function incidentTickets(incidentId: number): Row[] {
+function incidentTickets(incidentId: number, programId?: string | null): Row[] {
+  if (programId !== undefined) {
+    return db
+      .handle()
+      .query(
+        `SELECT t.* FROM tickets t
+         JOIN incident_tickets it ON it.ticket_id = t.id
+         JOIN program_incidents i ON i.id = it.incident_id
+         WHERE it.incident_id = ? AND it.program_id = ? AND i.program_id = ?
+         ORDER BY t.created_at ASC`,
+      )
+      .all(incidentId, programId, programId) as Row[];
+  }
   return db
     .handle()
     .query(
@@ -308,7 +433,7 @@ function detectBursts({
   const rows = fetchRecentTickets(programId, now - windowMs);
   if (rows.length < threshold) return { candidates: [] };
 
-  const groups = gapClusters.clusterQuestions(rows.map((r) => String(r.question || "")));
+  const groups = incidentClusterQuestions(rows.map((r) => String(r.question || "")));
   const questionIndex = buildQuestionIndex(rows);
   const used = new Set<number>();
   const out: Row[] = [];
@@ -436,6 +561,9 @@ function recordAffectedReport({
   channel: string;
   threadTs: string;
 }): Row {
+  const incident = getIncident(incidentId);
+  if (!incident) return { error: "incident not found" };
+  if (incident.program_id !== programId) return { error: "program mismatch" };
   const already = db
     .handle()
     .query("SELECT 1 FROM incident_reports WHERE incident_id = ? AND channel = ? AND thread_ts = ?")
@@ -449,8 +577,19 @@ function recordAffectedReport({
   return { ok: true, deduped: false };
 }
 
-function affectedReports(incidentId: number, onlyUnnotified = false): Row[] {
+function affectedReports(incidentId: number, onlyUnnotified = false, programId?: string | null): Row[] {
   const clause = onlyUnnotified ? "AND notified_at IS NULL" : "";
+  if (programId !== undefined) {
+    return db
+      .handle()
+      .query(
+        `SELECT r.* FROM incident_reports r
+         JOIN program_incidents i ON i.id = r.incident_id
+         WHERE r.incident_id = ? AND r.program_id = ? AND i.program_id = ? ${clause}
+         ORDER BY r.created_at ASC`,
+      )
+      .all(incidentId, programId, programId) as Row[];
+  }
   return db
     .handle()
     .query(`SELECT * FROM incident_reports WHERE incident_id = ? ${clause} ORDER BY created_at ASC`)
@@ -472,7 +611,7 @@ async function notifyAffectedUsers({
   if (!inc) return { error: "incident not found" };
   if (!client) return { error: "slack client unavailable" };
   const prog = programs.get(inc.program_id);
-  const pending = affectedReports(incidentId, true);
+  const pending = affectedReports(incidentId, true, inc.program_id);
   const text = resolutionMessage || defaultResolutionText(String(inc.title || ""));
   let notified = 0;
   const errors = [];
@@ -583,4 +722,5 @@ export = {
   recordAffectedReport,
   affectedReports,
   notifyAffectedUsers,
+  incidentClusterQuestions,
 };

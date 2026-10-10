@@ -114,9 +114,9 @@ interface HandlerContext {
       parentUserId?: string | null;
     },
   ): Promise<ThreadCrowd>;
-  getThreadContext(threadTs: string): string;
+  getThreadContext(threadTs: string, currentQuestion?: string | null, channel?: string | null): string;
   hasSpokenInThread(threadTs: string): boolean;
-  updateUserHistory(userId: string, question: string, answered: boolean): void;
+  updateUserHistory(userId: string, question: string, answered: boolean, programId?: string | null): void;
 }
 interface HandlerRespond {
   ALWAYS: string;
@@ -282,13 +282,17 @@ async function checkDmRateLimit({
 
   db.recordMetric("rate_limited", null, limit.reason || "limit", program?.id || null);
   if (!program || !program.shadowMode) {
-    await require("./slackMessages").sendProgramMessage({
-      client,
-      program,
-      channel: event.channel,
-      threadTs,
-      text: DM_RATE_LIMIT_NOTICE,
-    });
+    try {
+      await require("./slackMessages").sendProgramMessage({
+        client,
+        program,
+        channel: event.channel,
+        threadTs,
+        text: DM_RATE_LIMIT_NOTICE,
+      });
+    } catch (error: unknown) {
+      log.warn("handlers", `rate-limit notice failed: ${errorMessage(error)}`);
+    }
   }
   return false;
 }
@@ -310,7 +314,7 @@ async function handleImage({ event, client, imageFile, program = null }: ImageAr
     const reply = await vision.analyzeImage(
       imageFile.url_private,
       question,
-      context.getThreadContext(threadTs),
+      context.getThreadContext(threadTs, null, event.channel),
       config.slack.botToken,
       docs,
     );
@@ -324,7 +328,7 @@ async function handleImage({ event, client, imageFile, program = null }: ImageAr
         text: replyText.plainDashes(reply),
       });
       context.addToThread(threadTs, "assistant", reply, null, event.channel);
-      context.updateUserHistory(event.user, question || "image analysis", true);
+      context.updateUserHistory(event.user, question || "image analysis", true, program?.id || null);
       db.recordMetric("answer_vision");
     } else {
       db.recordMetric("silent", null, "vision_skip", program?.id || null);
@@ -598,8 +602,9 @@ async function handleTeachRequest({
     });
     return true;
   }
+  if (claimFirst && isDirectMessage(event) && !db.claimMessage(event.ts, event.channel)) return true;
   if (!(await checkDmRateLimit({ event, client, program: prog, threadTs: event.thread_ts }))) return true;
-  if (claimFirst && !db.claimMessage(event.ts, event.channel)) return true;
+  if (claimFirst && !isDirectMessage(event) && !db.claimMessage(event.ts, event.channel)) return true;
 
   const strippedCommand = stripTeachCommand(question, mentionOnly);
   const parsedDirect = learn.parseTeach(strippedCommand);
@@ -682,6 +687,7 @@ async function handleSumRequest({
     });
     return true;
   }
+  if (claimFirst && isDirectMessage(event) && !db.claimMessage(event.ts, event.channel)) return true;
   if (!(await checkDmRateLimit({ event, client, program: prog, threadTs: event.thread_ts }))) return true;
   if (!event.thread_ts) {
     await client.chat.postEphemeral({
@@ -691,7 +697,7 @@ async function handleSumRequest({
     });
     return true;
   }
-  if (claimFirst && !db.claimMessage(event.ts, event.channel)) return true;
+  if (claimFirst && !isDirectMessage(event) && !db.claimMessage(event.ts, event.channel)) return true;
 
   const isPublic = /\b(?:public|share|all|post)\b/i.test(question);
   try {
@@ -1090,8 +1096,8 @@ async function onMessage({ event, client }: HandlerArgs): Promise<void> {
   if (pinged) return;
 
   if (isDm) {
-    if (!(await checkDmRateLimit({ event, client, program: prog, threadTs: event.thread_ts || undefined }))) return;
     if (!db.claimMessage(event.ts, event.channel)) return;
+    if (!(await checkDmRateLimit({ event, client, program: prog, threadTs: event.thread_ts || undefined }))) return;
     await respond.respond({
       workspaceId,
       client,
@@ -1335,7 +1341,7 @@ async function onReactionAdded({ event, client }: { event: ReactionEvent; client
       }
       if (author !== config.slack.botUserId) return;
 
-      await client.chat.delete({ channel, ts: event.item.ts });
+      await replyText.discardPlaceholder(client, channel, event.item.ts);
       log.info("handlers", `deleted message ${event.item.ts} via reaction`);
     } catch (e: unknown) {
       log.warn("handlers", `could not delete ${event.item.ts}: ${errorData(e)?.error || errorMessage(e)}`);

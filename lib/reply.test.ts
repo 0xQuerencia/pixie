@@ -20,6 +20,10 @@ type TestClient = {
   };
 };
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test("an em dash becomes a comma", () => {
   assert.equal(
     reply.plainDashes("PS5 is 11,400 px — that's about 202h at T4"),
@@ -82,6 +86,188 @@ function fakeClient(): TestClient {
     },
   };
 }
+
+test("streaming placeholder uses the full word spinner and stops cleanly", async () => {
+  const client = fakeClient();
+  assert.equal(reply.STREAMING_WORDS.length, 187);
+  assert.equal(reply.STREAMING_WORDS[0], "Accomplishing");
+  assert.equal(reply.STREAMING_WORDS.at(-1), "Zigzagging");
+
+  const ts = await reply.postThinking(client, "C1", "spinner-thread");
+  assert.equal(ts, "posted-1");
+  assert.equal(client.calls.posts[0]?.text, "_Accomplishing..._");
+
+  await new Promise<void>((resolve) => setTimeout(resolve, reply.STREAMING_WORD_INTERVAL_MS + 40));
+  assert.equal(client.calls.updates[0]?.text, "_Actioning..._");
+
+  await reply.discardPlaceholder(client, "C1", ts);
+  const updatesAfterStop = client.calls.updates.length;
+  await new Promise<void>((resolve) => setTimeout(resolve, reply.STREAMING_WORD_INTERVAL_MS + 40));
+  assert.equal(client.calls.updates.length, updatesAfterStop, "discarding the placeholder stops the spinner");
+});
+
+test("duplicate spinner registration stops the previous owner", async () => {
+  const updates: MessagePayload[] = [];
+  const client = {
+    chat: {
+      postMessage: async () => ({ ts: "same-spinner-ts" }),
+      update: async (payload: MessagePayload) => {
+        updates.push(payload);
+        return {};
+      },
+      delete: async () => ({}),
+    },
+  };
+
+  const first = await reply.postThinking(client, "C1", "duplicate-spinner");
+  const second = await reply.postThinking(client, "C1", "duplicate-spinner");
+  assert.equal(first, second);
+
+  await delay(reply.STREAMING_WORD_INTERVAL_MS + 40);
+  assert.equal(updates.length, 1);
+
+  await reply.discardPlaceholder(client, "C1", second);
+  const updatesAfterStop = updates.length;
+  await delay(reply.STREAMING_WORD_INTERVAL_MS + 40);
+  assert.equal(updates.length, updatesAfterStop);
+});
+
+test("an ambiguous placeholder post is not retried into a duplicate", async () => {
+  let attempts = 0;
+  const recorded: MessagePayload[] = [];
+  const client = {
+    chat: {
+      postMessage: async (payload: MessagePayload) => {
+        attempts++;
+        recorded.push(payload);
+        if (attempts === 1) {
+          throw Object.assign(new Error("transport outcome unknown"), { retryAfter: 0 });
+        }
+        return { ts: "duplicate-placeholder" };
+      },
+    },
+  };
+
+  const ts = await reply.postThinking(client, "C1", "ambiguous-placeholder");
+  try {
+    assert.equal(ts, null);
+    assert.equal(attempts, 1);
+    assert.equal(recorded.length, 1, "the recorded placeholder must not be reposted");
+  } finally {
+    if (ts) await reply.discardPlaceholder(client, "C1", ts);
+  }
+});
+
+test("spinner timeout lets finalization publish without a late overwrite", async () => {
+  const updates: MessagePayload[] = [];
+  const deletes: MessagePayload[] = [];
+  const posts: MessagePayload[] = [];
+  const client = {
+    chat: {
+      postMessage: async (payload: MessagePayload) => {
+        posts.push(payload);
+        return { ts: posts.length === 1 ? "hung-spinner" : "fresh-answer" };
+      },
+      update: async (payload: MessagePayload) => {
+        updates.push(payload);
+        return new Promise<Record<string, unknown>>(() => {});
+      },
+      delete: async (payload: MessagePayload) => {
+        deletes.push(payload);
+        return { ok: true };
+      },
+    },
+  };
+
+  const placeholder = await reply.postThinking(client, "C1", "hung-spinner-thread");
+  await delay(reply.STREAMING_WORD_INTERVAL_MS + 40);
+  assert.equal(updates.length, 1);
+  await delay(reply.CHAT_UPDATE_TIMEOUT_MS + reply.STREAMING_WORD_INTERVAL_MS + 100);
+  assert.equal(updates.length, 1, "a timed-out spinner must not schedule another update");
+
+  const result = await Promise.race([
+    reply
+      .finalize(client, "C1", "hung-spinner-thread", Promise.resolve(placeholder), "final answer")
+      .then((ts: string | null) => ({
+        status: "done",
+        ts,
+      })),
+    delay((reply.CHAT_UPDATE_TIMEOUT_MS || 2000) + 500).then(() => ({ status: "hung", ts: null })),
+  ]);
+
+  assert.equal(result.status, "done");
+  assert.equal(result.ts, "fresh-answer");
+  assert.equal(deletes.length, 1);
+  assert.equal(updates.length, 1, "the late spinner request cannot edit the final answer");
+});
+
+test("settling a stream is bounded and quarantines its late update", async () => {
+  const updates: MessagePayload[] = [];
+  const deletes: MessagePayload[] = [];
+  const posts: MessagePayload[] = [];
+  const client = {
+    chat: {
+      postMessage: async (payload: MessagePayload) => {
+        posts.push(payload);
+        return { ts: "stream-final" };
+      },
+      update: async (payload: MessagePayload) => {
+        updates.push(payload);
+        return new Promise<Record<string, unknown>>(() => {});
+      },
+      delete: async (payload: MessagePayload) => {
+        deletes.push(payload);
+        return { ok: true };
+      },
+    },
+  };
+  const writer = reply.makeStreamWriter({
+    client,
+    channel: "C1",
+    ensurePlaceholder: async () => "stream-hung",
+  });
+
+  writer.write("partial answer");
+  await delay(reply.STREAM_UPDATE_MS + 40);
+  assert.equal(updates.length, 1);
+
+  const settle = await Promise.race([
+    writer.settle().then(() => "done"),
+    delay((reply.CHAT_UPDATE_TIMEOUT_MS || 2000) + 500).then(() => "hung"),
+  ]);
+  assert.equal(settle, "done");
+
+  writer.write("late answer");
+  await delay(reply.STREAM_UPDATE_MS + 40);
+  assert.equal(updates.length, 1);
+
+  const result = await reply.finalize(client, "C1", "stream-thread", Promise.resolve("stream-hung"), "final answer");
+  assert.equal(result, "stream-final");
+  assert.equal(deletes.length, 1);
+  assert.equal(updates.length, 1);
+});
+
+test("close makes a stream writer ignore later writes", async () => {
+  let ensured = 0;
+  const client = {
+    chat: {
+      update: async () => ({}),
+    },
+  };
+  const writer = reply.makeStreamWriter({
+    client,
+    channel: "C1",
+    ensurePlaceholder: async () => {
+      ensured++;
+      return "closed-stream";
+    },
+  });
+
+  writer.close();
+  writer.write("late chunk");
+  await delay(reply.STREAM_UPDATE_MS + 40);
+  assert.equal(ensured, 0);
+});
 
 test("withReplySignature appends a program's catchphrase to an answer", () => {
   const prog = { id: "demo", replySignature: "stay helpful :demo:" };
@@ -204,6 +390,55 @@ test("finalize deletes placeholderTs before posting fresh when chat.update fails
   assert.deepEqual(deletes[0], { channel: "C1", ts: "ph-old" });
   assert.equal(posts.length, 1);
   assert.equal(posts[0].text, "hello world");
+});
+
+test("finalize catches a failed fallback post and returns a safe result", async () => {
+  let deletes = 0;
+  const client = {
+    chat: {
+      update: async () => {
+        throw new Error("cant_update_message");
+      },
+      delete: async () => {
+        deletes++;
+        return { ok: true };
+      },
+      postMessage: async () => {
+        const error = Object.assign(new Error("not_in_channel"), { code: "not_in_channel" });
+        throw error;
+      },
+    },
+  };
+
+  const result = await reply.finalize(client, "C1", "fallback-failure", Promise.resolve("ph-failed"), "hello world");
+  assert.equal(result, null);
+  assert.equal(deletes, 1);
+});
+
+test("spinner honors retry-after before attempting another update", async () => {
+  let attempts = 0;
+  const client = {
+    chat: {
+      postMessage: async () => ({ ts: "retry-after-spinner" }),
+      update: async () => {
+        attempts++;
+        if (attempts === 1) {
+          throw Object.assign(new Error("rate_limited"), { retryAfter: 1 });
+        }
+        return {};
+      },
+      delete: async () => ({}),
+    },
+  };
+
+  const ts = await reply.postThinking(client, "C1", "retry-after-thread");
+  await delay(reply.STREAMING_WORD_INTERVAL_MS + 40);
+  assert.equal(attempts, 1);
+  await delay(900);
+  assert.equal(attempts, 1, "retry-after must suppress the next fixed interval");
+  await delay(1000);
+  assert.equal(attempts, 2);
+  await reply.discardPlaceholder(client, "C1", ts);
 });
 
 test("discardPlaceholder retries on transient errors with backoff", async () => {

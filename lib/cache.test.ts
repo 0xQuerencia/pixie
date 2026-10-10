@@ -44,6 +44,18 @@ test("keyFor differs for genuinely different questions", () => {
   assert.notEqual(cache.keyFor("how do i submit my project"), cache.keyFor("can i submit late"));
 });
 
+test("cache keys preserve polarity and cannot reuse an affirmative answer for a negation", () => {
+  assert.match(cache.normalize("AI not allowed"), /(^| )not( |$)/);
+  assert.match(cache.normalize("AI no longer allowed"), /(^| )no( |$)/);
+  assert.match(cache.normalize("AI never allowed"), /(^| )never( |$)/);
+  assert.match(cache.normalize("AI cannot be used"), /(^| )cannot( |$)/);
+  assert.notEqual(cache.keyFor("AI allowed"), cache.keyFor("AI not allowed"));
+
+  cache.put("AI allowed", { source: "Policy", answer: "yes" }, undefined, "acme");
+  assert.equal(cache.get("AI not allowed", "acme"), null);
+  assert.deepEqual(cache.get("AI allowed", "acme"), { source: "Policy", answer: "yes" });
+});
+
 test("keyFor refuses a question with no meaningful words", () => {
   assert.equal(cache.normalize("what is it"), "");
   assert.equal(cache.keyFor("what is it"), null);

@@ -7,6 +7,9 @@ const programs = require("../programs");
 const log = require("../log");
 const config = require("../config").config;
 const { probe } = require("../probe");
+const retrieve = require("../retrieve");
+const llm = require("../llm");
+const claimVerifier = require("../claimVerifier");
 const { coverageStats, relativeTime } = require("../stats");
 import type { Program, ProgramSource, SlackClient, Ticket } from "../types";
 
@@ -698,8 +701,12 @@ function healthCheck(): ApiResponse {
     dbPath: process.env.PIXIE_DB_PATH || "default (pixie.db)",
   };
 }
+// No inline source text in the fleet list
 function programsList() {
-  return programs.all();
+  return programs.all().map((program) => ({
+    ...program,
+    sources: (program.sources || []).map(({ content: _content, ...source }) => source),
+  }));
 }
 
 function programSave(prog: ProgramSaveBody): ApiResponse {
@@ -861,15 +868,21 @@ function needProgramActor(programId: string | null, actorId: string | null): Api
   return null;
 }
 
+function programThreadTs(programId: string | null, threadTs: string | null | undefined): string | null {
+  if (!programId || !threadTs) return null;
+  return db.getTicketByThreadTs(threadTs, null, programId) ? threadTs : null;
+}
+
 function ticketTenantError(ticket: Ticket, body: TicketActionBody = {}): string | null {
   if (body.programId && body.programId !== ticket.program_id) return "program mismatch";
   if (body.workspaceId && ticket.workspace_id && body.workspaceId !== ticket.workspace_id) return "workspace mismatch";
   return null;
 }
 
-function ticketDetail(id: number): ApiResponse | null {
+function ticketDetail(id: number, programId?: string | null): ApiResponse | null {
   const ticket = db.getTicket(id);
   if (!ticket) return null;
+  if (programId !== undefined && programId !== ticket.program_id) return { error: "program mismatch" };
   const resolutionSummary = ticket.resolution_summary || null;
   return {
     ticket: { ...ticket, resolutionSummary },
@@ -1104,7 +1117,7 @@ function sourceNamesFromContext(context: string): string[] {
   return names;
 }
 
-async function internalTestQuestion(programId: string, body: TestQuestionBody = {}): Promise<ApiResponse> {
+async function internalTestQuestionImpl(programId: string, body: TestQuestionBody = {}): Promise<ApiResponse> {
   const program = programs.get(programId);
   if (!program) return { error: "unknown program" };
   const question = String(body.question || "").trim();
@@ -1133,7 +1146,13 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
 
   let engagement = { engage: false, intent: null, error: "unavailable", source: null };
   try {
-    engagement = await require("../pipeline/engagement").classify({ message: question, program, role, addressed });
+    engagement = await require("../pipeline/engagement").classify({
+      message: question,
+      program,
+      role,
+      addressed,
+      noTelemetry: true,
+    });
   } catch (_) {}
 
   let context = "";
@@ -1144,19 +1163,51 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
   }
   const sources = sourceNamesFromContext(context);
 
+  let retrieval: Array<{ source: string; heading: string; lexical: number; semantic: number; total: number }> = [];
+  try {
+    const index = require("../knowledge").getIndex(programId);
+    retrieval = retrieve
+      .scoreDetailed(index, question)
+      .slice(0, 10)
+      .map(
+        (entry: {
+          chunk: { source?: string; heading?: string };
+          lexical: number;
+          semantic: number;
+          total: number;
+        }) => ({
+          source: String(entry.chunk?.source || ""),
+          heading: String(entry.chunk?.heading || ""),
+          lexical: Number(entry.lexical.toFixed(4)),
+          semantic: Number(entry.semantic.toFixed(4)),
+          total: Number(entry.total.toFixed(4)),
+        }),
+      );
+  } catch (_) {}
+
   let result = null;
   try {
-    result = await require("../lookup").lookupAnswer(question, "", program, null, { skipCache: true });
+    result = await require("../lookup").lookupAnswer(question, "", program, null, {
+      skipCache: true,
+      noTelemetry: true,
+    });
   } catch (error) {
     log.warn("web/api", "test-question lookup failed");
     result = null;
   }
-  let grounded = false;
-  try {
-    grounded = require("../respond").isGroundedAnswer(result);
-  } catch (_) {
-    grounded = false;
+  let grounding = result?.verification || null;
+  if (!grounding) {
+    const evidence = sourceNamesFromContext(context).map((source) => ({
+      id: `${source}#probe`,
+      programId,
+      sourceName: source,
+      text: context,
+      authority: "source",
+      kind: "source",
+    }));
+    grounding = claimVerifier.verifyAnswerSync({ programId, answer: result?.answer || "", evidence });
   }
+  const grounded = grounding.sendable === true;
 
   const decided = testQuestionExpectedAction({
     program,
@@ -1176,12 +1227,26 @@ async function internalTestQuestion(programId: string, body: TestQuestionBody = 
     engaged: Boolean(engagement.engage),
     classifierError: engagement.error || null,
     sources,
+    retrieval,
+    grounding,
     grounded,
     expectedAction: decided.expectedAction,
     reason: decided.reason,
+    why:
+      decided.expectedAction === "reply"
+        ? "Pixie has a supported answer and would reply."
+        : decided.expectedAction === "ticket+helper"
+          ? "Pixie could not verify a sendable answer, so it would escalate to a helper."
+          : decided.expectedAction === "uncertain"
+            ? "Pixie would acknowledge uncertainty without guessing."
+            : "The engagement policy says to stay silent for this message.",
     answerPreview:
       decided.expectedAction === "reply" && result && result.answer ? String(result.answer).slice(0, 500) : null,
   };
+}
+
+async function internalTestQuestion(programId: string, body: TestQuestionBody = {}): Promise<ApiResponse> {
+  return llm.withNoTelemetry(() => internalTestQuestionImpl(programId, body));
 }
 
 function internalTicketSearch(params: TicketSearchParams): ApiResponse {
@@ -1411,7 +1476,11 @@ async function internalCopilot(action: string, body: CopilotBody = {}): Promise<
     switch (action) {
       case "draft": {
         if (!body.question) return { error: "question required" };
-        const res = await copilot.draftReply({ program, question: body.question, threadTs: body.threadTs || null });
+        const res = await copilot.draftReply({
+          program,
+          question: body.question,
+          threadTs: programThreadTs(programId, body.threadTs),
+        });
         copilot.auditCopilot(programId, actorId, "draft", { grounded: res.grounded });
         return res;
       }
@@ -1428,7 +1497,7 @@ async function internalCopilot(action: string, body: CopilotBody = {}): Promise<
         return copilot.summarizeThread({
           program,
           ticket,
-          threadTs: body.threadTs || (ticket && ticket.thread_ts) || null,
+          threadTs: programThreadTs(programId, body.threadTs) || (ticket && ticket.thread_ts) || null,
         });
       }
       case "factcheck": {
@@ -1441,7 +1510,11 @@ async function internalCopilot(action: string, body: CopilotBody = {}): Promise<
       }
       case "ask": {
         if (!body.question) return { error: "question required" };
-        const res = await copilot.ask({ program, question: body.question, threadTs: body.threadTs || null });
+        const res = await copilot.ask({
+          program,
+          question: body.question,
+          threadTs: programThreadTs(programId, body.threadTs),
+        });
         copilot.auditCopilot(programId, actorId, "ask", { grounded: res.grounded });
         return res;
       }
@@ -1727,11 +1800,14 @@ function internalIncidents(programId: string, query: IncidentQuery = {}): ApiRes
   );
 }
 
-function internalIncidentDetail(incidentId: number): ApiResponse {
+function internalIncidentDetail(programId: string, incidentId: number): ApiResponse {
+  if (!programId) return { error: "programId required" };
+  const missing = needProgram(programId);
+  if (missing) return missing;
   const incidents = require("../incidents");
-  const inc = incidents.getIncident(Number(incidentId));
+  const inc = incidents.getIncident(Number(incidentId), programId);
   if (!inc) return { error: "incident not found" };
-  return { incident: inc, tickets: incidents.incidentTickets(Number(incidentId)) };
+  return { incident: inc, tickets: incidents.incidentTickets(Number(incidentId), programId) };
 }
 
 function internalIncidentDetect(programId: string, body: IncidentBody = {}): ApiResponse {
@@ -1799,11 +1875,14 @@ async function internalIncidentNotify(incidentId: number, body: IncidentBody = {
   });
 }
 
-function internalIncidentAffected(incidentId: number, query: IncidentQuery = {}): ApiResponse {
+function internalIncidentAffected(programId: string, incidentId: number, query: IncidentQuery = {}): ApiResponse {
+  if (!programId) return { error: "programId required" };
+  const missing = needProgram(programId);
+  if (missing) return missing;
   const incidents = require("../incidents");
-  const inc = incidents.getIncident(Number(incidentId));
+  const inc = incidents.getIncident(Number(incidentId), programId);
   if (!inc) return { error: "incident not found" };
-  const reports = incidents.affectedReports(Number(incidentId), query.onlyUnnotified === "1");
+  const reports = incidents.affectedReports(Number(incidentId), query.onlyUnnotified === "1", programId);
   return {
     total: reports.length,
     unnotified: reports.filter((r: AffectedReportRow) => !r.notified_at).length,

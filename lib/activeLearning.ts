@@ -1,10 +1,8 @@
 const audit = require("./audit");
 const db = require("./db");
 const log = require("./log");
-const programs = require("./programs");
 const retrieve = require("./retrieve");
 const resolutionMemory = require("./resolutionMemory");
-const learn = require("./learn");
 import type { Program, Ticket } from "./types";
 
 interface TicketEvent {
@@ -164,18 +162,19 @@ async function learnFromResolution({
 
   const fact = await extractFact(ticket);
   if (!fact.question || !fact.answer) return { ok: false, skipped: true };
-  const program = ticket.program || programs.get(ticket.program_id);
-  const mode = program?.learning === "review" ? "review" : "auto";
-  const status = mode === "review" ? "candidate" : "approved";
+  // A helper resolution is useful evidence, but it is never policy authority
+  // by itself. Keep every automatically extracted fact reviewable until a
+  // human explicitly approves it.
+  const status = "candidate";
   const overlaps = fact.category
     ? db
         .learnedFactsForOverlap(ticket.program_id, fact.category)
+        .filter((row: LearnedFact) => row.status === "candidate" || row.status === "pending")
         .filter((row: LearnedFact) => canSupersede(row.question, fact.question))
     : [];
   const same = overlaps.find((row: LearnedFact) => normalizeAnswer(row.answer) === normalizeAnswer(fact.answer));
   if (same) {
     db.refreshLearnedFact(same.id);
-    learn.invalidateCorpus();
     return { ok: true, fact: db.getLearnedFactById(same.id), refreshed: true };
   }
 
@@ -191,27 +190,26 @@ async function learnFromResolution({
     category: fact.category,
     ticketId: ticket.id,
     resolverId: helperId,
-    autoLearned: mode === "auto",
+    autoLearned: false,
   });
   if (!id) {
     const duplicate = db.learnedFactForTicket(ticket.id);
     return duplicate ? { ok: true, fact: duplicate, duplicate: true } : { ok: false, error: "could not store fact" };
   }
   for (const old of overlaps) db.supersedeLearnedFact(old.id, id);
-  if (status === "approved") learn.invalidateCorpus();
   const stored = db.getLearnedFactById(id);
   audit.record({
     programId: ticket.program_id,
     actorId: helperId,
-    action: mode === "auto" ? "knowledge.auto_learned" : "knowledge.candidate_proposed",
+    action: "knowledge.candidate_proposed",
     entityType: "learned_fact",
     entityId: id,
-    metadata: { ticketId: ticket.id, resolverId: helperId, autoLearned: mode === "auto" },
+    metadata: { ticketId: ticket.id, resolverId: helperId, autoLearned: false },
   });
   return {
     ok: true,
     fact: stored,
-    autoLearned: mode === "auto",
+    autoLearned: false,
     superseded: overlaps.map((row: LearnedFact) => row.id),
   };
 }

@@ -99,24 +99,37 @@ export interface CoreUsageAggregate extends CoreUsageMetric {
   }>;
 }
 
-const nonNegative = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+const nonNegative = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
 const metric = (value: unknown): value is CoreUsageMetric => {
   if (!value || typeof value !== "object") return false;
   const row = value as Partial<CoreUsageMetric>;
-  return [row.requests, row.inputTokens, row.outputTokens, row.cachedInputTokens].every(nonNegative)
-    && (row.costCents === null || nonNegative(row.costCents));
+  return (
+    [row.requests, row.inputTokens, row.outputTokens, row.cachedInputTokens].every(nonNegative) &&
+    (row.costCents === null || nonNegative(row.costCents))
+  );
 };
-const rows = (value: unknown): value is unknown[] => Array.isArray(value) && value.every((row) => row && typeof row === "object");
+const rows = (value: unknown): value is unknown[] =>
+  Array.isArray(value) && value.every((row) => row && typeof row === "object");
 
 function isUsageAggregate(value: unknown, programId: string, params: CoreUsageParams): value is CoreUsageAggregate {
   if (!value || typeof value !== "object") return false;
   const row = value as Partial<CoreUsageAggregate>;
-  return row.programId === programId && row.from === params.from && row.to === params.to
-    && metric(row.summary) && [row.requests, row.inputTokens, row.outputTokens, row.cachedInputTokens].every(nonNegative)
-    && (row.costCents === null || nonNegative(row.costCents)) && rows(row.timeseries)
-    && rows(row.operation) && rows(row.provider) && rows(row.model)
-    && rows(row.topConsumers) && rows(row.recent)
-    && (row.precision === "exact" || row.precision === "estimated" || row.precision === "unavailable");
+  return (
+    row.programId === programId &&
+    row.from === params.from &&
+    row.to === params.to &&
+    metric(row.summary) &&
+    [row.requests, row.inputTokens, row.outputTokens, row.cachedInputTokens].every(nonNegative) &&
+    (row.costCents === null || nonNegative(row.costCents)) &&
+    rows(row.timeseries) &&
+    rows(row.operation) &&
+    rows(row.provider) &&
+    rows(row.model) &&
+    rows(row.topConsumers) &&
+    rows(row.recent) &&
+    (row.precision === "exact" || row.precision === "estimated" || row.precision === "unavailable")
+  );
 }
 
 export async function coreUsage(programId: string, params: CoreUsageParams): Promise<CoreUsageAggregate> {
@@ -141,7 +154,10 @@ function send(method: string, payload: Record<string, unknown>): RequestInit {
   return { method, body: JSON.stringify(payload) };
 }
 
-export async function syncProgramToCore(programId: string, payload: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+export async function syncProgramToCore(
+  programId: string,
+  payload: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
   try {
     const { status, body } = await call(`/internal/v1/programs/${encodeURIComponent(programId)}`, {
       method: "PUT",
@@ -159,7 +175,11 @@ export async function coreTicketSearch(params: Record<string, string>): Promise<
   return request(`/internal/v1/tickets?${new URLSearchParams(params).toString()}`, "ticket search failed");
 }
 
-export async function coreTicketAction(ticketId: number, action: string, payload: Record<string, unknown>): Promise<unknown> {
+export async function coreTicketAction(
+  ticketId: number,
+  action: string,
+  payload: Record<string, unknown>,
+): Promise<unknown> {
   return request(`/internal/v1/tickets/${ticketId}/${action}`, "ticket action failed", send("PATCH", payload));
 }
 
@@ -221,9 +241,14 @@ export async function coreSlackChannels(): Promise<{ ok: boolean; channels: Core
   return body as { ok: boolean; channels: CoreChannel[]; reason?: string };
 }
 
-export async function coreChannelMembership(
-  channelId: string,
-): Promise<{ ok: boolean; hasAccess: boolean; name?: string | null; isPrivate?: boolean; isArchived?: boolean; reason?: string }> {
+export async function coreChannelMembership(channelId: string): Promise<{
+  ok: boolean;
+  hasAccess: boolean;
+  name?: string | null;
+  isPrivate?: boolean;
+  isArchived?: boolean;
+  reason?: string;
+}> {
   const { body } = await call(`/internal/v1/slack/membership?channel=${encodeURIComponent(channelId)}`);
   return body as { ok: boolean; hasAccess: boolean; name?: string | null; reason?: string };
 }
@@ -239,7 +264,9 @@ export interface CoreSlackProfile {
 // Display identity only — the public name variants and the avatar, nothing
 // else (never email). Single-user form; prefer coreUserInfoBatch for a page
 // that renders more than one.
-export async function coreUserInfo(userId: string): Promise<{ ok: boolean } & Partial<CoreSlackProfile> & { reason?: string }> {
+export async function coreUserInfo(
+  userId: string,
+): Promise<{ ok: boolean } & Partial<CoreSlackProfile> & { reason?: string }> {
   const { body } = await call(`/internal/v1/slack/users/info?user=${encodeURIComponent(userId)}`);
   return body as { ok: boolean } & Partial<CoreSlackProfile> & { reason?: string };
 }
@@ -265,11 +292,18 @@ export async function coreMacrosList(programId: string, q = ""): Promise<unknown
   );
 }
 
-export async function coreMacroSave(programId: string, payload: Record<string, unknown> & { id?: number }): Promise<unknown> {
+export async function coreMacroSave(
+  programId: string,
+  payload: Record<string, unknown> & { id?: number },
+): Promise<unknown> {
   if (payload.id) {
     return request(`/internal/v1/macros/${payload.id}`, "macro update failed", send("PATCH", payload));
   }
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/macros`, "macro create failed", send("POST", payload));
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/macros`,
+    "macro create failed",
+    send("POST", payload),
+  );
 }
 
 export async function coreMacroDelete(macroId: number, payload: Record<string, unknown>): Promise<unknown> {
@@ -280,7 +314,10 @@ export async function coreMacroSend(macroId: number, payload: Record<string, unk
   return request(`/internal/v1/macros/${macroId}`, "macro send failed", send("POST", payload));
 }
 
-export async function coreMacroBulk(macroId: number, payload: Record<string, unknown>): Promise<{
+export async function coreMacroBulk(
+  macroId: number,
+  payload: Record<string, unknown>,
+): Promise<{
   sent: number[];
   skipped: Array<{ ticketId: number; reason: string }>;
 }> {
@@ -288,7 +325,11 @@ export async function coreMacroBulk(macroId: number, payload: Record<string, unk
 }
 
 // Both reads are actor-gated in Core: pass the server-verified linked Slack ID.
-export async function coreMacrosWaiting(programId: string, actorId: string, category?: string): Promise<{ count: number; ticketIds: number[] }> {
+export async function coreMacrosWaiting(
+  programId: string,
+  actorId: string,
+  category?: string,
+): Promise<{ count: number; ticketIds: number[] }> {
   const params = new URLSearchParams({ actorId });
   if (category) params.set("category", category);
   return request(
@@ -297,7 +338,10 @@ export async function coreMacrosWaiting(programId: string, actorId: string, cate
   );
 }
 
-export async function coreMacroTemplates(programId: string, actorId: string): Promise<{ templates: unknown[]; placeholders?: unknown[] }> {
+export async function coreMacroTemplates(
+  programId: string,
+  actorId: string,
+): Promise<{ templates: unknown[]; placeholders?: unknown[] }> {
   return request(
     `/internal/v1/programs/${encodeURIComponent(programId)}/macros/templates?actorId=${encodeURIComponent(actorId)}`,
     "macro templates lookup failed",
@@ -370,8 +414,14 @@ export interface CoreLeaderboardEntry {
   points: number;
 }
 
-export async function coreLeaderboard(programId: string, days = 30): Promise<{ programId: string; days: number; leaderboard: CoreLeaderboardEntry[] }> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/leaderboard?days=${days}`, "leaderboard failed");
+export async function coreLeaderboard(
+  programId: string,
+  days = 30,
+): Promise<{ programId: string; days: number; leaderboard: CoreLeaderboardEntry[] }> {
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/leaderboard?days=${days}`,
+    "leaderboard failed",
+  );
 }
 
 export async function coreRoutingExpertise(programId: string, payload: Record<string, unknown>): Promise<unknown> {
@@ -401,7 +451,11 @@ export async function coreIncidentDetail(incidentId: number): Promise<unknown> {
 }
 
 export async function coreIncidentDetect(programId: string, payload: Record<string, unknown>): Promise<unknown> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/incidents`, "incident detection failed", send("POST", payload));
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/incidents`,
+    "incident detection failed",
+    send("POST", payload),
+  );
 }
 
 export async function coreIncidentManual(programId: string, payload: Record<string, unknown>): Promise<unknown> {
@@ -420,11 +474,16 @@ export async function coreIncidentNotify(incidentId: number, payload: Record<str
   return request(`/internal/v1/incidents/${incidentId}/notify`, "incident notify failed", send("POST", payload));
 }
 
-export async function coreIncidentAffected(incidentId: number): Promise<{ total: number; unnotified: number; reports: unknown[] }> {
+export async function coreIncidentAffected(
+  incidentId: number,
+): Promise<{ total: number; unnotified: number; reports: unknown[] }> {
   return request(`/internal/v1/incidents/${incidentId}/affected`, "incident affected-reports failed");
 }
 
-export async function coreRadarList(programId: string, params: Record<string, string> = {}): Promise<{ signals: unknown[] }> {
+export async function coreRadarList(
+  programId: string,
+  params: Record<string, string> = {},
+): Promise<{ signals: unknown[] }> {
   const query = new URLSearchParams(params).toString();
   return request(
     `/internal/v1/programs/${encodeURIComponent(programId)}/radar${query ? `?${query}` : ""}`,
@@ -433,7 +492,11 @@ export async function coreRadarList(programId: string, params: Record<string, st
 }
 
 export async function coreRadarEvaluate(programId: string, payload: Record<string, unknown>): Promise<unknown> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/radar`, "radar evaluate failed", send("POST", payload));
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/radar`,
+    "radar evaluate failed",
+    send("POST", payload),
+  );
 }
 
 export async function coreRadarAction(signalId: number, payload: Record<string, unknown>): Promise<unknown> {
@@ -449,11 +512,19 @@ export async function coreRetentionPreview(programId: string): Promise<Record<st
 }
 
 export async function coreRetentionPolicy(programId: string, payload: Record<string, unknown>): Promise<unknown> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/retention`, "retention update failed", send("PATCH", payload));
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/retention`,
+    "retention update failed",
+    send("PATCH", payload),
+  );
 }
 
 export async function coreRetentionSweep(programId: string, payload: Record<string, unknown>): Promise<unknown> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/retention`, "retention sweep failed", send("POST", payload));
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/retention`,
+    "retention sweep failed",
+    send("POST", payload),
+  );
 }
 
 export async function coreHelpers(programId: string): Promise<unknown[]> {
@@ -486,11 +557,20 @@ export interface CoreHistoryImportProgress {
 }
 
 export async function coreHistoryImportProgress(programId: string): Promise<CoreHistoryImportProgress> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/history-import`, "history import progress failed");
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/history-import`,
+    "history import progress failed",
+  );
 }
 
-export async function coreHistoryImportStart(programId: string): Promise<CoreHistoryImportProgress & { ok: boolean; started: boolean }> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/history-import`, "history import failed", send("POST", {}));
+export async function coreHistoryImportStart(
+  programId: string,
+): Promise<CoreHistoryImportProgress & { ok: boolean; started: boolean }> {
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/history-import`,
+    "history import failed",
+    send("POST", {}),
+  );
 }
 
 // Dashboard ops clients (Core lib/web/dashboardApi.js). Every route is
@@ -531,6 +611,17 @@ export interface DashboardTicketRow {
   resolved_at: number | null;
 }
 
+export type CoreTracePayload = Record<string, unknown>;
+
+export interface CoreTraceRow {
+  id: number;
+  ticketId?: number | null;
+  stage: string;
+  payload: CoreTracePayload;
+  createdAt: number;
+  requestId: string | null;
+}
+
 export async function coreDashboardTicketSearch(
   programId: string,
   params: DashboardTicketSearchParams = {},
@@ -540,7 +631,10 @@ export async function coreDashboardTicketSearch(
     if (value !== undefined && value !== "") query.set(key, value);
   }
   const suffix = query.toString() ? `?${query}` : "";
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/tickets/search${suffix}`, "ticket search failed");
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/tickets/search${suffix}`,
+    "ticket search failed",
+  );
 }
 
 export async function coreDashboardTicketDetail(programId: string, ticketId: number): Promise<unknown> {
@@ -562,7 +656,10 @@ export interface DashboardMetrics {
 }
 
 export async function coreDashboardMetrics(programId: string, days = 30): Promise<DashboardMetrics> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/dashboard/metrics?days=${days}`, "dashboard metrics failed");
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/dashboard/metrics?days=${days}`,
+    "dashboard metrics failed",
+  );
 }
 
 export interface KnowledgeSourceStatus {
@@ -576,7 +673,9 @@ export interface KnowledgeSourceStatus {
   chunks: number | null;
 }
 
-export async function coreKnowledgeStatus(programId: string): Promise<{ programId: string; sources: KnowledgeSourceStatus[] }> {
+export async function coreKnowledgeStatus(
+  programId: string,
+): Promise<{ programId: string; sources: KnowledgeSourceStatus[] }> {
   return request(`/internal/v1/programs/${encodeURIComponent(programId)}/knowledge/status`, "knowledge status failed");
 }
 
@@ -626,7 +725,11 @@ export async function coreAudit(programId: string): Promise<unknown[]> {
 }
 
 export async function coreHelpersSync(programId: string, payload: Record<string, unknown>): Promise<unknown> {
-  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/helpers`, "helpers sync failed", send("PUT", payload));
+  return request(
+    `/internal/v1/programs/${encodeURIComponent(programId)}/helpers`,
+    "helpers sync failed",
+    send("PUT", payload),
+  );
 }
 
 export type TestQuestionExpectedAction = "reply" | "silence" | "ticket+helper" | "uncertain";
@@ -640,7 +743,21 @@ export interface TestQuestionResult {
   engaged?: boolean;
   classifierError?: string | null;
   reason?: string;
+  why?: string;
   sources: string[];
+  retrieval?: Array<{
+    source: string;
+    heading: string;
+    lexical: number;
+    semantic: number;
+    total: number;
+  }>;
+  grounding?: {
+    verdict?: string;
+    claims?: Array<{ claim: string; supported: boolean; reason?: string }>;
+    unsupported?: Array<{ claim: string; supported: boolean; reason?: string }>;
+    errors?: string[];
+  };
   grounded: boolean;
   expectedAction: TestQuestionExpectedAction;
   answerPreview: string | null;

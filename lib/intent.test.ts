@@ -303,5 +303,17 @@ test("short-input: length<5 fail-softs to null", async () => {
     const after = db.handle().query("SELECT COUNT(*) c FROM metrics WHERE kind = 'intent_parse_failure'").get().c;
     assert.equal(after, baseline);
   });
+
+  test("noTelemetry suppresses classifier failure metrics", async () => {
+    const baseline = db.handle().query("SELECT COUNT(*) c FROM metrics WHERE kind = 'intent_parse_failure'").get().c;
+    llm.complete = async () => ({ text: "not structured" });
+    const verdict = await intent.classifyIntent("how do i submit my project to acme", null, {
+      history: [],
+      noTelemetry: true,
+    });
+    assert.equal(verdict, null);
+    const after = db.handle().query("SELECT COUNT(*) c FROM metrics WHERE kind = 'intent_parse_failure'").get().c;
+    assert.equal(after, baseline);
+  });
 }
 export {};

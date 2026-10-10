@@ -13,6 +13,7 @@ const respond = require("./respond");
 const answer = require("./answer");
 const intent = require("./intent");
 const learn = require("./learn");
+const knowledge = require("./knowledge");
 
 before(() => {
   db.close();
@@ -335,6 +336,10 @@ test("grounded answer and escalation are mutually exclusive (grounded -> no esca
       {
         id: "guidelines",
         programId: "prog-grounded",
+        sourceName: "Official Guidelines",
+        kind: "source",
+        authority: "source",
+        text: "You can resubmit returned projects once fixes are made.",
         supportsClaims: ["You can resubmit returned projects once fixes are made."],
       },
     ],
@@ -352,6 +357,8 @@ test("grounded answer and escalation are mutually exclusive (grounded -> no esca
     ],
   };
   db.saveProgram(prog);
+  db.saveSourceText(knowledge.sourceCacheKey(prog.sources[0]), prog.sources[0].content);
+  knowledge.invalidate();
   db.claimProgramChannel({ programId: prog.id, channelId: prog.helpChannel, kind: "help" });
   programs.invalidate();
 
@@ -377,6 +384,7 @@ test("grounded answer and escalation are mutually exclusive (grounded -> no esca
     answer.getAnswerOrChatStream = origGetAnswer;
     answer.getAnswerOrChat = origGetAnswerPlain;
     db.deleteProgram(prog.id);
+    knowledge.invalidate();
   }
 });
 

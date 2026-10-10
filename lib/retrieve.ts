@@ -1,4 +1,6 @@
+const crypto = require("node:crypto");
 const log = require("./log");
+const semanticSimilarity = require("./semanticSimilarity");
 
 type Domain = "hardware" | "software" | "general";
 type Section = [string, string];
@@ -50,20 +52,34 @@ interface ScoredChunk {
   chunk: Chunk;
   value: number;
 }
+interface DetailedScore {
+  chunk: Chunk;
+  lexical: number;
+  semantic: number;
+  total: number;
+}
 interface SelectContextOptions {
   generated: Section[];
   learned?: Section[];
   index: SearchIndex;
   sources: Section[];
   question: string;
+  programId?: string | null;
   budget?: number;
   exclude?: Set<string> | string[] | null;
   generatedLast?: boolean;
 }
-
+type ContextEvidence = {
+  id: string;
+  kind?: "source" | "learned";
+  programId: string | null;
+  sourceName: string;
+  heading: string | null;
+  text: string;
+  authority: "source" | "learned";
+};
 const MIN_CHUNK = 100;
 const MAX_CHUNK = 900;
-
 const DEFAULT_BUDGET = 2500;
 
 const IDENTITY_BUDGET = 2500;
@@ -71,7 +87,6 @@ const TIMELINE_BUDGET = 1200;
 const LEARNED_BUDGET = 1500;
 const LEARNED_MAX_FACTS = 5;
 const TOTAL_CONTEXT_BUDGET = 8000;
-
 const K1 = 1.2;
 const B = 0.75;
 
@@ -80,7 +95,6 @@ const BOOST_SPECIFIC_CAP = 5.0;
 const BOOST_RETURNED_RULE = 5.0;
 const BOOST_DOMAIN_MATCH = 3.0;
 const DEMOTE_CONTRADICTION = 0.1;
-
 const STOPWORDS = new Set([
   "the",
   "a",
@@ -228,6 +242,11 @@ const REFERRAL_TERMS = ["referral", "referrals"];
 const DISCLOSURE_TERMS = ["disclose", "disclosure"];
 const CONSEQUENCE_TERMS = ["exceed", "hide", "hiding", "consequence", "fraud", "ban", "penalty"];
 const HOURS_TERMS = ["hour", "hours", "deflate", "deflation", "reduce", "payout"];
+const POLICY_QUERY_PATTERN =
+  /\b(?:policy|policies|rules?|refund|deadline|requirements?|submit|limit|prohibited|allowed)\b/i;
+const GENERIC_POLICY_ANCHORS = new Set(
+  "allowed allow permitted policy rule deadline date expire hour day time window limit".split(" "),
+);
 
 function detectDomain(text: string): Domain {
   const lowered = String(text || "").toLowerCase();
@@ -477,7 +496,7 @@ function applyAiBoost(value: number, flags: ScoreFlags, signals: AiSignals) {
   if (!flags.isAiQuery) return value;
   if (flags.isFirmwareQuery) {
     if (signals.isFirmwareAiRule) return value + BOOST_DECIDING_RULE;
-    if (signals.isHardwareAiProhibition) return value * DEMOTE_CONTRADICTION;
+    if (signals.isHardwareAiProhibition) return 0;
     return value;
   }
   if (flags.isHardwareQuery || flags.isCadOrPcbQuery) {
@@ -524,12 +543,12 @@ function chunkDomainSignals(domain: Domain, combined: string): DomainSignals {
 
 function applyDomainBoost(value: number, flags: ScoreFlags, domainSignals: DomainSignals) {
   if (flags.isSoftwareQuery && !flags.isHardwareQuery) {
-    if (domainSignals.isHardwareChunk && !domainSignals.isSoftwareChunk) return 0;
+    if (domainSignals.isHardwareChunk) return 0;
     if (domainSignals.isSoftwareChunk) return value + BOOST_DOMAIN_MATCH;
     return value;
   }
   if (flags.isHardwareQuery && !flags.isSoftwareQuery) {
-    if (domainSignals.isSoftwareChunk && !domainSignals.isHardwareChunk) return 0;
+    if (domainSignals.isSoftwareChunk) return 0;
     if (domainSignals.isHardwareChunk) return value + BOOST_DOMAIN_MATCH;
   }
   return value;
@@ -592,79 +611,162 @@ function score(index: SearchIndex, queryTerms: string[]): ScoredChunk[] {
     .sort((a, b) => b.value - a.value);
 }
 
-function selectChunks(index: SearchIndex, question: string, budget = DEFAULT_BUDGET): Chunk[] {
+function isPolicySensitiveQuery(queryTerms: string[], flags: ScoreFlags): boolean {
+  return Object.values(flags).some(Boolean) || POLICY_QUERY_PATTERN.test(queryTerms.join(" "));
+}
+
+function hasAliasAnchor(question: string, chunk: Chunk): boolean {
+  const queryTokens = semanticSimilarity.expandedTokens(question);
+  const chunkTokens = semanticSimilarity.expandedTokens(`${chunk.source} ${chunk.heading || ""} ${chunk.text}`);
+  return [...queryTokens].some((token) => chunkTokens.has(token) && !GENERIC_POLICY_ANCHORS.has(token));
+}
+
+/**
+ * Return the lexical score and a bounded paraphrase signal separately. The
+ * semantic signal is reranking-only: policy/domain contradiction filters are
+ * applied before it can contribute, and it can never create source content.
+ */
+function scoreDetailed(index: SearchIndex, question: string): DetailedScore[] {
   const queryTerms = tokenize(question);
   if (queryTerms.length === 0) return [];
+  const { docs, docFreq, avgLength } = index;
+  const totalDocs = docs.length;
+  const flags = classifyQuery(queryTerms);
+  const policySensitive = isPolicySensitiveQuery(queryTerms, flags);
+  return docs
+    .map((doc) => {
+      const base = baseScore(doc, queryTerms, totalDocs, docFreq, avgLength);
+      const lexical = base > 0 ? boostedValue(base, doc, flags) : 0;
+      // Run the existing hard filters with a neutral lexical score so a fuzzy
+      // match cannot bypass exact software/hardware or policy exclusions.
+      const eligible = boostedValue(1, doc, flags) > 0;
+      const anchored = lexical > 0 || hasAliasAnchor(question, doc.chunk);
+      const semantic =
+        eligible && (!policySensitive || anchored)
+          ? semanticSimilarity.score(question, `${doc.chunk.heading || ""}\n${doc.chunk.text}`.slice(0, 2400))
+          : 0;
+      const semanticBonus = semantic >= 0.18 ? Math.min(semantic * 1.25, 1.25) : 0;
+      return {
+        chunk: doc.chunk,
+        lexical,
+        semantic,
+        total: lexical + semanticBonus,
+      };
+    })
+    .filter((row) => row.total > 0)
+    .sort((a, b) => b.total - a.total || b.lexical - a.lexical);
+}
 
+function selectChunks(index: SearchIndex, question: string, budget = DEFAULT_BUDGET): Chunk[] {
   const selected: Chunk[] = [];
   let used = 0;
-  for (const { chunk } of score(index, queryTerms)) {
-    if (used + chunk.text.length > budget) break;
+  for (const { chunk } of scoreDetailed(index, question)) {
+    if (used + chunk.text.length > budget) continue;
     selected.push(chunk);
     used += chunk.text.length;
   }
   return selected;
 }
 
-function selectContext({
+function evidenceId(kind: "source" | "learned", sourceName: string, heading: string | null, text: string): string {
+  return `${sourceName}#${crypto
+    .createHash("sha1")
+    .update(`${kind}\n${sourceName}\n${heading || ""}\n${text}`)
+    .digest("hex")
+    .slice(0, 16)}`;
+}
+function makeEvidence(
+  kind: "source" | "learned",
+  programId: string | null | undefined,
+  sourceName: string,
+  heading: string | null,
+  text: string,
+): ContextEvidence {
+  const common = {
+    id: evidenceId(kind, sourceName, heading, text),
+    programId: programId || null,
+    sourceName,
+    heading,
+    text,
+    authority: kind,
+  };
+  return kind === "learned" ? { ...common, kind } : common;
+}
+function selectContextDetailed({
   generated,
   learned = [],
   index,
   sources,
   question,
+  programId = null,
   budget = DEFAULT_BUDGET,
   exclude = null,
   generatedLast = false,
-}: SelectContextOptions) {
+}: SelectContextOptions): { context: string; evidence: ContextEvidence[] } {
   const dropped = exclude instanceof Set ? exclude : new Set(exclude || []);
   const kept = ([name]: Section) => !dropped.has(name);
 
-  const budgetFor = (name: string) => {
-    if (name === "About pixie") return IDENTITY_BUDGET;
-    if (name === "Program timeline") return TIMELINE_BUDGET;
-    if (name === "Learned answers") return LEARNED_BUDGET;
-    return TIMELINE_BUDGET;
-  };
+  const budgetFor = (name: string) =>
+    ({ "About pixie": IDENTITY_BUDGET, "Program timeline": TIMELINE_BUDGET, "Learned answers": LEARNED_BUDGET })[
+      name
+    ] || TIMELINE_BUDGET;
   const render = ([name, text]: Section) => `### ${name}\n${String(text || "").slice(0, budgetFor(name))}`;
-  const renderLearned = ([name, text]: Section) => `### ${name}\n${String(text || "").slice(0, LEARNED_BUDGET)}`;
-
-  const head = generated
-    .filter(kept)
-    .filter(([, text]) => text)
-    .map(render);
-  const learnedSections = learned
-    .filter(kept)
-    .filter(([, text]) => text)
-    .map(renderLearned);
+  const nonempty = ([, text]: Section) => !!text;
+  const head = generated.filter(kept).filter(nonempty).map(render);
+  const learnedSections = learned.filter(kept).filter(nonempty).map(render);
   const first = [...head, ...learnedSections];
   const order = (retrieved: string[]) =>
     (generatedLast ? [...retrieved, ...first] : [...first, ...retrieved]).join("\n\n");
   const enforceTotal = (text: string) =>
     text.length > TOTAL_CONTEXT_BUDGET ? text.slice(0, TOTAL_CONTEXT_BUDGET) : text;
-
+  const learnedEvidence = learned
+    .filter(kept)
+    .filter(([, text]) => text)
+    .map(([name, text]) => makeEvidence("learned", programId, name, null, String(text || "").slice(0, LEARNED_BUDGET)));
+  const finish = (retrieved: string[], evidence: ContextEvidence[]) => {
+    const context = enforceTotal(order(retrieved));
+    const orderedEvidence = generatedLast ? [...evidence, ...learnedEvidence] : [...learnedEvidence, ...evidence];
+    return {
+      context,
+      evidence: orderedEvidence.filter((entry) => entry.text && context.includes(entry.text)),
+    };
+  };
   const chunks = selectChunks(index, question, budget).filter((c) => !dropped.has(c.source));
   if (chunks.length === 0) {
+    const queryTerms = tokenize(question);
+    const flags = classifyQuery(queryTerms);
+    if (isPolicySensitiveQuery(queryTerms, flags)) {
+      log.debug("retrieve", `no eligible policy/domain chunk for "${(question || "").slice(0, 60)}"`);
+      return finish([], []);
+    }
     log.debug("retrieve", `no chunk matched "${(question || "").slice(0, 60)}" — sending capped corpus`);
     let used = 0;
     const capped: string[] = [];
+    const fallbackEvidence: ContextEvidence[] = [];
     for (const [name, text] of sources.filter(kept)) {
       if (used >= budget) break;
       const slice = text.slice(0, Math.max(200, budget - used));
       capped.push(`### ${name}\n${slice}`);
+      fallbackEvidence.push(makeEvidence("source", programId, name, null, slice));
       used += slice.length;
     }
-    return enforceTotal(order(capped));
+    return finish(capped, fallbackEvidence);
   }
-
   const bySource = new Map<string, string[]>();
   for (const chunk of chunks) {
     const texts = bySource.get(chunk.source) || [];
     texts.push(chunk.text);
     bySource.set(chunk.source, texts);
   }
-
   const body = [...bySource].map(([name, texts]) => `### ${name}\n${texts.join("\n\n")}`);
-  return enforceTotal(order(body));
+  const sourceEvidence = chunks.map((chunk) =>
+    makeEvidence("source", programId, chunk.source, chunk.heading, chunk.text),
+  );
+  return finish(body, sourceEvidence);
+}
+
+function selectContext(options: SelectContextOptions): string {
+  return selectContextDetailed(options).context;
 }
 
 export = {
@@ -675,8 +777,10 @@ export = {
   chunkSections,
   buildIndex,
   score,
+  scoreDetailed,
   selectChunks,
   selectContext,
+  selectContextDetailed,
   MIN_CHUNK,
   MAX_CHUNK,
   DEFAULT_BUDGET,

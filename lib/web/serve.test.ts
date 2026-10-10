@@ -86,7 +86,7 @@ test("absent PIXIE_INTERNAL_TOKEN → 404 (not 401/403); bad bearer → 401", as
   }
 });
 
-test("dashboard gates — pulse/stream/ask/health need session; writes need admin", async () => {
+test("dashboard gates — pulse/ask/health need session; stream needs admin; writes need admin", async () => {
   const serve = require("./serve");
   const auth = require("./auth");
   const anon = new Request("http://localhost/api/pulse");
@@ -411,6 +411,116 @@ test("POST /internal/v1/programs/:id/incidents/manual creates only for a program
     );
     assert.equal(denied.status, 403);
     assert.equal(api.internalIncidents("manual-route-b", {}).length, 0);
+  } finally {
+    if (saved === undefined) delete process.env.PIXIE_INTERNAL_TOKEN;
+    else process.env.PIXIE_INTERNAL_TOKEN = saved;
+  }
+});
+
+test("GET incident detail and affected routes require and enforce programId", async () => {
+  const saved = process.env.PIXIE_INTERNAL_TOKEN;
+  process.env.PIXIE_INTERNAL_TOKEN = "scoped-incident-token";
+  const serve = require("./serve");
+  const api = require("./api");
+  const incidents = require("../incidents");
+  const H = withToken("scoped-incident-token");
+  try {
+    api.internalProgramSync("read-route-a", {
+      name: "Read route A",
+      workspaceId: "TW-RRA",
+      claimedBy: "U-rra",
+      programChannels: [],
+    });
+    api.internalProgramSync("read-route-b", {
+      name: "Read route B",
+      workspaceId: "TW-RRB",
+      claimedBy: "U-rrb",
+      programChannels: [],
+    });
+    const created = api.internalIncidentCreate("read-route-a", { actorId: "U-rra", title: "Route outage" });
+    const incidentId = created.incident.id;
+    incidents.recordAffectedReport({
+      incidentId,
+      programId: "read-route-a",
+      requesterId: "U-route-requester",
+      channel: "C-route",
+      threadTs: "route-thread",
+    });
+
+    const missing = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}`, { headers: H }),
+    );
+    assert.equal(missing.status, 400);
+
+    const detail = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}?programId=read-route-a`, { headers: H }),
+    );
+    assert.equal(detail.status, 200);
+    assert.equal((await detail.json()).incident.program_id, "read-route-a");
+
+    const foreign = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}?programId=read-route-b`, { headers: H }),
+    );
+    assert.equal(foreign.status, 404);
+
+    const affected = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}/affected?programId=read-route-a`, {
+        headers: H,
+      }),
+    );
+    assert.equal(affected.status, 200);
+    assert.equal((await affected.json()).total, 1);
+
+    const foreignAffected = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/incidents/${incidentId}/affected?programId=read-route-b`, {
+        headers: H,
+      }),
+    );
+    assert.equal(foreignAffected.status, 404);
+  } finally {
+    if (saved === undefined) delete process.env.PIXIE_INTERNAL_TOKEN;
+    else process.env.PIXIE_INTERNAL_TOKEN = saved;
+  }
+});
+
+test("legacy ticket detail requires a program scope even with the shared bearer", async () => {
+  const saved = process.env.PIXIE_INTERNAL_TOKEN;
+  process.env.PIXIE_INTERNAL_TOKEN = "legacy-detail-token";
+  const serve = require("./serve");
+  const api = require("./api");
+  const H = withToken("legacy-detail-token");
+  try {
+    api.internalProgramSync("legacy-detail", {
+      name: "Legacy detail",
+      workspaceId: "TW-LD",
+      claimedBy: "U-legacy-owner",
+      programChannels: [],
+    });
+    const tid = db.createTicket({
+      programId: "legacy-detail",
+      workspaceId: "TW-LD",
+      channel: "C-LD",
+      threadTs: "legacy-detail-thread",
+      requesterId: "U-legacy-requester",
+      question: "legacy question",
+    });
+
+    const missing = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/tickets/${tid}`, { headers: H }),
+    );
+    assert.equal(missing.status, 400);
+    assert.match((await missing.json()).error, /programId required/);
+
+    const wrong = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/tickets/${tid}?programId=other-program`, { headers: H }),
+    );
+    assert.equal(wrong.status, 403);
+
+    const valid = await serve.handleRequest(
+      new Request(`http://localhost/internal/v1/tickets/${tid}?programId=legacy-detail`, { headers: H }),
+    );
+    assert.equal(valid.status, 200);
+    assert.equal((await valid.json()).ticket.program_id, "legacy-detail");
   } finally {
     if (saved === undefined) delete process.env.PIXIE_INTERNAL_TOKEN;
     else process.env.PIXIE_INTERNAL_TOKEN = saved;

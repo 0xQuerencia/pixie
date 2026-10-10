@@ -1,0 +1,405 @@
+{
+  "programs": {
+    "A": {
+      "name": "Program A",
+      "sources": [
+        {
+          "name": "Rules",
+          "type": "text",
+          "content": "## Refunds\nUnused grants may be returned before activation.\n\nRefund requests must be sent to the helper channel within 14 days.\n\n## Submission rules\nProjects must be public on GitHub.\n\nReviewers reject submissions that copy tutorials without changes.\n\n## AI policy\nAI tools may generate at most 30% of project code.\n\n## Hardware projects\nHardware projects must include a PCB schematic and a wiring diagram.\n\n## Software projects\nSoftware projects must include a README with setup steps.\n\n## Payouts\nPayouts are processed within 5 business days after approval.\n\n## Login problems\nIf login redirects you in a loop, sign out and sign in again from the dashboard."
+        }
+      ]
+    },
+    "B": {
+      "name": "Program B",
+      "sources": [
+        {
+          "name": "Rules",
+          "type": "text",
+          "content": "## Refunds\nUnused grants cannot be returned.\n\n## AI policy\nAI tools are not allowed for project code.\n\n## Payouts\nPayouts take 21 days after approval."
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "paraphrase: money back",
+      "category": "paraphrase",
+      "program": "A",
+      "question": "Can I get my money back if I never activated the grant?",
+      "model": "SOURCE: Rules\nANSWER: Yes, unused grants may be returned before activation.",
+      "expect": {
+        "action": "reply",
+        "grounded": true
+      }
+    },
+    {
+      "name": "slang: grant money back",
+      "category": "slang",
+      "program": "A",
+      "question": "yo can i like get my grant money back if i never started it",
+      "model": "SOURCE: Rules\nANSWER: Unused grants may be returned before activation.",
+      "expect": {
+        "action": "reply",
+        "grounded": true
+      }
+    },
+    {
+      "name": "typo: refund deadline",
+      "category": "typo",
+      "program": "A",
+      "question": "wat is the refnd deadlne",
+      "model": "SOURCE: Rules\nANSWER: Refund requests must be sent to the helper channel within 14 days.",
+      "expect": {
+        "action": "reply",
+        "grounded": true
+      }
+    },
+    {
+      "name": "follow-up: payout after AI question",
+      "category": "follow_up",
+      "program": "A",
+      "question": "what about the payout?",
+      "model": "SOURCE: Rules\nANSWER: Payouts are processed within 5 business days after approval.",
+      "path": "lookup",
+      "contextPrompt": "\n\nPrevious conversation:\nuser: what is the AI limit?\nassistant: AI tools may generate at most 30% of project code.",
+      "expect": {
+        "answered": true
+      }
+    },
+    {
+      "name": "unsupported policy: invented bonus",
+      "category": "unsupported_policy",
+      "program": "A",
+      "question": "Can I get a $500 bonus for finishing early?",
+      "model": "SOURCE: Rules\nANSWER: Yes, finishing early earns a $500 bonus.",
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "numeric hallucination: wrong percent",
+      "category": "numeric",
+      "program": "A",
+      "question": "How much AI code is allowed?",
+      "model": "SOURCE: Rules\nANSWER: AI tools may generate at most 50% of project code.",
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "numeric control: right percent",
+      "category": "numeric",
+      "program": "A",
+      "question": "How much AI code is allowed?",
+      "model": "SOURCE: Rules\nANSWER: AI tools may generate at most 30% of project code.",
+      "expect": {
+        "action": "reply",
+        "grounded": true
+      }
+    },
+    {
+      "name": "numeric hallucination: spelled-out amount",
+      "category": "numeric",
+      "program": "A",
+      "question": "How long do payouts take?",
+      "model": "SOURCE: Rules\nANSWER: Payouts are processed within five business days after approval.",
+      "expect": {
+        "action": "reply",
+        "grounded": true
+      }
+    },
+    {
+      "name": "numeric hallucination: wrong spelled-out amount",
+      "category": "numeric",
+      "program": "A",
+      "question": "How long do payouts take?",
+      "model": "SOURCE: Rules\nANSWER: Payouts are processed within ten business days after approval.",
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "contradiction: AI flipped",
+      "category": "contradiction",
+      "program": "A",
+      "question": "Can I use AI to write my project code?",
+      "model": "SOURCE: Rules\nANSWER: AI tools may not generate project code.",
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "contradiction: refund flipped",
+      "category": "contradiction",
+      "program": "A",
+      "question": "Can I return an unused grant?",
+      "model": "SOURCE: Rules\nANSWER: Unused grants cannot be returned before activation.",
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "memory: attempted step is in the prompt",
+      "category": "memory",
+      "program": "A",
+      "question": "login still redirects me in a loop",
+      "model": "SOURCE: Rules\nANSWER: If login redirects you in a loop, sign out and sign in again from the dashboard.",
+      "path": "lookup",
+      "memory": [
+        {
+          "kind": "attempt",
+          "value": "clearing cookies did not help"
+        },
+        {
+          "kind": "environment",
+          "value": "Firefox on Linux"
+        }
+      ],
+      "expect": {
+        "answered": true,
+        "promptIncludes": [
+          "Steps already tried: clearing cookies did not help",
+          "Firefox on Linux",
+          "ANSWER-ONLY"
+        ]
+      }
+    },
+    {
+      "name": "memory is never evidence",
+      "category": "memory",
+      "program": "A",
+      "question": "how long do I have to ask for a refund",
+      "model": "SOURCE: Rules\nANSWER: Refunds are available for 90 days.",
+      "path": "lookup",
+      "memory": [
+        {
+          "kind": "problem",
+          "value": "Refunds are available for 90 days."
+        }
+      ],
+      "expect": {
+        "answered": false
+      }
+    },
+    {
+      "name": "cross-program: program B must not use A rules",
+      "category": "isolation",
+      "program": "B",
+      "question": "Can I return an unused grant?",
+      "model": "SOURCE: Rules\nANSWER: Unused grants may be returned before activation.",
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "cross-program: B keeps its own rule",
+      "category": "isolation",
+      "program": "B",
+      "question": "Can I return an unused grant?",
+      "model": "SOURCE: Rules\nANSWER: Unused grants cannot be returned.",
+      "expect": {
+        "action": "reply",
+        "grounded": true
+      }
+    },
+    {
+      "name": "cross-program: A memory never reaches B",
+      "category": "isolation",
+      "program": "B",
+      "question": "login still redirects me",
+      "model": "SOURCE: NONE\nANSWER: UNCLEAR",
+      "path": "lookup",
+      "expect": {
+        "answered": false,
+        "promptExcludes": [
+          "clearing cookies"
+        ]
+      }
+    },
+    {
+      "name": "helper escalation: manual override",
+      "category": "escalation",
+      "program": "A",
+      "question": "Please manually override my rejection and approve my project",
+      "expect": {
+        "action": "ticket+helper"
+      }
+    },
+    {
+      "name": "silence: chatter",
+      "category": "silence",
+      "program": "A",
+      "question": "lol nice",
+      "engagement": {
+        "engage": false,
+        "intent": "human_conversation"
+      },
+      "expect": {
+        "action": "silence"
+      }
+    },
+    {
+      "name": "candidate fact is not trusted",
+      "category": "candidate_vs_approved",
+      "program": "A",
+      "question": "When is the late submission deadline?",
+      "model": "SOURCE: Rules\nANSWER: Late submissions are accepted until June 1.",
+      "learnedFacts": [
+        {
+          "question": "late deadline",
+          "answer": "Late submissions are accepted until June 1.",
+          "status": "candidate"
+        }
+      ],
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "approved fact is trusted",
+      "category": "candidate_vs_approved",
+      "program": "A",
+      "question": "When is the late submission deadline?",
+      "model": "SOURCE: Learned answers\nANSWER: Late submissions are accepted until June 1.",
+      "learnedFacts": [
+        {
+          "question": "late submission deadline",
+          "answer": "Late submissions are accepted until June 1.",
+          "status": "approved"
+        }
+      ],
+      "expect": {
+        "action": "reply",
+        "grounded": true
+      }
+    },
+    {
+      "name": "stale auto-learned fact is not trusted",
+      "category": "stale_unsafe_learned",
+      "program": "A",
+      "question": "When is the late submission deadline?",
+      "model": "SOURCE: Learned answers\nANSWER: Late submissions are accepted until June 1.",
+      "learnedFacts": [
+        {
+          "question": "late submission deadline",
+          "answer": "Late submissions are accepted until June 1.",
+          "status": "approved",
+          "autoLearned": true
+        }
+      ],
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "hardware question does not get software rules",
+      "category": "domain",
+      "program": "A",
+      "question": "What README do I need for my hardware project?",
+      "model": "SOURCE: Rules\nANSWER: Software projects must include a README with setup steps.",
+      "expect": {
+        "action": "ticket+helper",
+        "grounded": false
+      }
+    },
+    {
+      "name": "send: supported answer is posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "Can I get my money back if I never activated the grant?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Unused grants may be returned before activation.",
+      "expect": {
+        "posted": true,
+        "postIncludes": [
+          "may be returned before activation"
+        ]
+      }
+    },
+    {
+      "name": "send: invented bonus is never posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "Can I get a $500 bonus for finishing early?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Yes, finishing early earns a $500 bonus.",
+      "expect": {
+        "postExcludes": [
+          "$500"
+        ]
+      }
+    },
+    {
+      "name": "send: wrong percent is never posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "How much AI code is allowed?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: AI tools may generate at most 50% of project code.",
+      "expect": {
+        "postExcludes": [
+          "50%"
+        ]
+      }
+    },
+    {
+      "name": "send: poisoned cache entry is never served",
+      "category": "send_path",
+      "program": "A",
+      "question": "How long do I have to ask for a refund?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Refund requests must be sent to the helper channel within 14 days.",
+      "expect": {
+        "postExcludes": [
+          "90 days"
+        ]
+      },
+      "cachePoison": {
+        "source": "Rules",
+        "answer": "Refunds are available for 90 days."
+      }
+    },
+    {
+      "name": "send: memory-only claim is never posted",
+      "category": "send_path",
+      "program": "A",
+      "question": "How long do I have to ask for a refund?",
+      "path": "respond",
+      "model": "SOURCE: Rules\nANSWER: Refunds are available for 90 days.",
+      "expect": {
+        "postExcludes": [
+          "90 days"
+        ]
+      },
+      "memory": [
+        {
+          "kind": "problem",
+          "value": "Refunds are available for 90 days."
+        }
+      ]
+    },
+    {
+      "name": "send: chatter posts nothing",
+      "category": "send_path",
+      "program": "A",
+      "question": "lol nice",
+      "path": "respond",
+      "expect": {
+        "posted": false
+      },
+      "engagement": {
+        "engage": false,
+        "intent": "human_conversation"
+      }
+    }
+  ]
+}

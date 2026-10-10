@@ -13,7 +13,25 @@ const initialState: ActionState = { error: null };
 export function RefreshSourcesButton({ programId }: { programId: string }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  return <span className="inline-flex items-center gap-2"><button type="button" className="pixie-button pixie-button-quiet" disabled={busy} onClick={async () => { setBusy(true); setMessage(null); const result = await refreshKnowledgeSources(programId); setBusy(false); setMessage(result.ok ? "Syncing…" : result.error ?? "Refresh failed."); }}>{busy ? "Starting…" : "Re-sync"}</button>{message && <span className="text-xs text-text-muted">{message}</span>}</span>;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        className="pixie-button pixie-button-quiet"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          setMessage(null);
+          const result = await refreshKnowledgeSources(programId);
+          setBusy(false);
+          setMessage(result.ok ? "Syncing…" : (result.error ?? "Refresh failed."));
+        }}
+      >
+        {busy ? "Starting…" : "Re-sync"}
+      </button>
+      {message && <span className="text-xs text-text-muted">{message}</span>}
+    </span>
+  );
 }
 
 // One honest sentence per failed action, in the same notice every other Core
@@ -83,7 +101,12 @@ export type Fact = {
   auto_learned?: number;
 };
 
-export function CandidateCard({ programId, candidate, authorLabel, createdLabel }: {
+export function CandidateCard({
+  programId,
+  candidate,
+  authorLabel,
+  createdLabel,
+}: {
   programId: string;
   candidate: Fact;
   authorLabel?: string;
@@ -91,18 +114,25 @@ export function CandidateCard({ programId, candidate, authorLabel, createdLabel 
 }) {
   const [state, formAction] = useActionState(hostedCandidateReview, initialState);
   const fieldId = `candidate-answer-${candidate.id}`;
+  const awaitingReview = candidate.status !== "approved";
   return (
     <article className="pixie-panel-raised min-w-0 p-4">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span className="font-mono text-xs tabular-nums text-text-muted">#{candidate.id}</span>
-        {candidate.auto_learned && candidate.ticket_id ? <span className="text-[12px] text-brand">auto-learned from ticket #{candidate.ticket_id}</span> : candidate.ticket_id ? <span className="text-[12px] text-text-muted">from ticket #{candidate.ticket_id}</span> : null}
+        {candidate.auto_learned && candidate.ticket_id ? (
+          <span className="text-[12px] text-brand">auto-learned from ticket #{candidate.ticket_id}</span>
+        ) : candidate.ticket_id ? (
+          <span className="text-[12px] text-text-muted">from ticket #{candidate.ticket_id}</span>
+        ) : null}
         {candidate.category ? <Chip>{candidate.category}</Chip> : null}
         {authorLabel ? <span className="text-[12px] text-text-muted">by {authorLabel}</span> : null}
         {createdLabel ? <span className="font-mono text-[11px] text-text-muted">{createdLabel}</span> : null}
         {candidate.status === "approved" && <StatusDot status="resolved">approved</StatusDot>}
-        <span className="ml-auto">
-          <StatusDot status="candidate">awaiting review</StatusDot>
-        </span>
+        {awaitingReview && (
+          <span className="ml-auto">
+            <StatusDot status="candidate">awaiting review</StatusDot>
+          </span>
+        )}
       </div>
 
       {/* The question and its draft answer, quoted off the card's left edge: this
@@ -113,31 +143,35 @@ export function CandidateCard({ programId, candidate, authorLabel, createdLabel 
         <p className="mt-2 text-[14px] leading-relaxed text-text/90">{candidate.answer}</p>
       </div>
 
-      {(candidate.status !== "approved" || candidate.status === "approved") && <form action={formAction} className="mt-3.5 border-t border-line pt-3.5">
+      <form action={formAction} className="mt-3.5 border-t border-line pt-3.5">
         <input type="hidden" name="programId" value={programId} />
         <input type="hidden" name="candidateId" value={candidate.id} />
         <label className={labelClass} htmlFor={fieldId}>
           Edit answer
         </label>
-        {candidate.status !== "approved" && <textarea
-          id={fieldId}
-          name="editAnswer"
-          rows={2}
-          defaultValue={candidate.answer}
-          aria-label="Edit answer"
-          className={`${inputClass} resize-y`}
-        />}
+        {awaitingReview && (
+          <textarea
+            id={fieldId}
+            name="editAnswer"
+            rows={2}
+            defaultValue={candidate.answer}
+            aria-label="Edit answer"
+            className={`${inputClass} resize-y`}
+          />
+        )}
         <div className="mt-3 flex flex-wrap gap-2">
-          {candidate.status !== "approved" && <button type="submit" name="reviewAction" value="approve" className={btnPrimary}>
-            <IconCheck size={16} />
-            Approve
-          </button>}
+          {awaitingReview && (
+            <button type="submit" name="reviewAction" value="approve" className={btnPrimary}>
+              <IconCheck size={16} />
+              Approve
+            </button>
+          )}
           <button type="submit" name="reviewAction" value="reject" className={btnQuiet}>
-            {candidate.status === "approved" ? "Retire" : "Reject"}
+            {awaitingReview ? "Reject" : "Retire"}
           </button>
         </div>
         <ErrorLine state={state} />
-      </form>}
+      </form>
     </article>
   );
 }

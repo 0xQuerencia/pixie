@@ -23,6 +23,7 @@ const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const db = require("../db");
 const api = require("./api");
+const incidents = require("../incidents");
 
 before(() => {
   db.close();
@@ -67,6 +68,44 @@ test("manual incident creation is helper-gated and tenant-scoped", () => {
     api.internalIncidentCreate("missing-manual", { actorId: "U-manual-a", title: "x", publicMessage: "x" }).error,
     /unknown program/,
   );
+});
+
+test("incident detail and affected-report reads enforce the requested program", () => {
+  api.internalProgramSync("read-api-a", {
+    name: "Read API A",
+    workspaceId: "TW-RA",
+    claimedBy: "U-read-api-a",
+    programChannels: [],
+  });
+  api.internalProgramSync("read-api-b", {
+    name: "Read API B",
+    workspaceId: "TW-RB",
+    claimedBy: "U-read-api-b",
+    programChannels: [],
+  });
+  const created = api.internalIncidentCreate("read-api-a", {
+    actorId: "U-read-api-a",
+    title: "Read API outage",
+  });
+  const incidentId = created.incident.id;
+  incidents.recordAffectedReport({
+    incidentId,
+    programId: "read-api-a",
+    requesterId: "U-requester",
+    channel: "C-read-api",
+    threadTs: "read-api-thread",
+  });
+
+  const detail = api.internalIncidentDetail("read-api-a", incidentId);
+  assert.equal(detail.incident.program_id, "read-api-a");
+  assert.equal(detail.tickets.length, 0);
+  assert.match(api.internalIncidentDetail("read-api-b", incidentId).error, /not found/);
+  assert.match(api.internalIncidentDetail("", incidentId).error, /programId required/);
+
+  const affected = api.internalIncidentAffected("read-api-a", incidentId, {});
+  assert.equal(affected.total, 1);
+  assert.match(api.internalIncidentAffected("read-api-b", incidentId, {}).error, /not found/);
+  assert.match(api.internalIncidentAffected("", incidentId, {}).error, /programId required/);
 });
 
 test("program usage is validated, bounded, tenant-isolated, and metadata-only", () => {
@@ -448,6 +487,8 @@ test("serialization shapes carry no secrets — programs/health/detail/retention
   });
   const detail = api.ticketDetail(tid);
   assert.ok(detail.ticket && Array.isArray(detail.events) && Array.isArray(detail.notes));
+  assert.ok(api.ticketDetail(tid, "char-shape").ticket);
+  assert.equal(api.ticketDetail(tid, "other-shape").error, "program mismatch");
   assert.equal("token" in detail, false);
   const prev = api.internalRetentionPreview("char-shape");
   assert.ok(typeof prev.tickets === "number" && typeof prev.ticketEvents === "number");
@@ -648,6 +689,14 @@ test("internalTestQuestion probes retrieval+grounding with no Slack or ticket si
     programChannels: [],
   });
   const ticketsBefore = db.handle().query("SELECT COUNT(*) as count FROM tickets").get().count;
+  const cacheBefore = db.handle().query("SELECT COUNT(*) as count FROM answer_cache").get().count;
+  const sideEffectTables = ["ticket_events", "ticket_notes", "support_memory", "metrics", "llm_usage"];
+  const sideEffectsBefore = Object.fromEntries(
+    sideEffectTables.map((table: string) => [
+      table,
+      db.handle().query(`SELECT COUNT(*) as count FROM ${table}`).get().count,
+    ]),
+  );
 
   const engagementMod = require("../pipeline/engagement");
   const origClassify = engagementMod.classify;
@@ -680,6 +729,19 @@ test("internalTestQuestion probes retrieval+grounding with no Slack or ticket si
   }
   const ticketsAfter = db.handle().query("SELECT COUNT(*) as count FROM tickets").get().count;
   assert.equal(ticketsAfter, ticketsBefore, "the probe must never create tickets");
+  const cacheAfter = db.handle().query("SELECT COUNT(*) as count FROM answer_cache").get().count;
+  assert.equal(cacheAfter, cacheBefore, "the probe must never write answer_cache");
+  const sideEffectsAfter = Object.fromEntries(
+    sideEffectTables.map((table: string) => [
+      table,
+      db.handle().query(`SELECT COUNT(*) as count FROM ${table}`).get().count,
+    ]),
+  );
+  assert.deepEqual(
+    sideEffectsAfter,
+    sideEffectsBefore,
+    "the probe must not write operational telemetry or support data",
+  );
   assert.equal((await api.internalTestQuestion("nope-missing-prog", { question: "hi" })).error, "unknown program");
   assert.match((await api.internalTestQuestion("dash-probe", { question: "  " })).error, /question required/);
 });
