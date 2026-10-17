@@ -13,7 +13,7 @@ const claimVerifier = require("../claimVerifier");
 const { coverageStats, relativeTime } = require("../stats");
 const programDocs = require("../programDocs");
 const lifecycle = require("../lifecycle");
-const evalRunner = require("../evalRunner");
+const evalHarness = require("../evalHarness");
 const inspector = require("../inspect");
 import type { Program, ProgramSource, SlackClient, Ticket } from "../types";
 
@@ -903,7 +903,13 @@ function internalProgramSync(id: string, body: ProgramSyncBody = {}): ApiRespons
   if (!id || !/^[a-z0-9][a-z0-9-]{1,60}[a-z0-9]$/.test(id)) {
     return { error: "invalid program id (lowercase slug, 3-62 chars)" };
   }
-  const { programChannels = [], behavior: behaviorPatch, status: statusValue, lifecycle: lifecycleValue, ...fields } = body;
+  const {
+    programChannels = [],
+    behavior: behaviorPatch,
+    status: statusValue,
+    lifecycle: lifecycleValue,
+    ...fields
+  } = body;
   if (!fields.name || String(fields.name).length > 80) return { error: "name is required (max 80 chars)" };
 
   const programModel = require("../programModel");
@@ -1046,14 +1052,19 @@ function internalProgramDoc(programId: string, docId: number): ApiResponse {
   return doc ? { doc } : { error: "document not found" };
 }
 
-function internalProgramDocUpsert(programId: string, docId: number | null, body: Record<string, unknown> = {}): ApiResponse {
+function internalProgramDocUpsert(
+  programId: string,
+  docId: number | null,
+  body: Record<string, unknown> = {},
+): ApiResponse {
   const missing = needProgram(programId);
   if (missing) return missing;
   const oversized = bodyWithin(body);
   if (oversized) return oversized;
   try {
     const input = { ...body, updatedBy: body.updatedBy || body.updated_by || body.actorId || "internal" };
-    const doc = docId === null ? programDocs.createDoc(programId, input) : programDocs.updateDoc(programId, docId, input);
+    const doc =
+      docId === null ? programDocs.createDoc(programId, input) : programDocs.updateDoc(programId, docId, input);
     if (!doc) return { error: "document not found" };
     return { ok: true, doc };
   } catch (error) {
@@ -1067,7 +1078,11 @@ function internalProgramDocDelete(programId: string, docId: number): ApiResponse
   return programDocs.deleteDoc(programId, docId) ? { ok: true } : { error: "document not found" };
 }
 
-function internalProgramDocSupersede(programId: string, docId: number, body: Record<string, unknown> = {}): ApiResponse {
+function internalProgramDocSupersede(
+  programId: string,
+  docId: number,
+  body: Record<string, unknown> = {},
+): ApiResponse {
   const missing = needProgram(programId);
   if (missing) return missing;
   const oversized = bodyWithin(body);
@@ -1086,7 +1101,7 @@ function internalProgramDocSupersede(programId: string, docId: number, body: Rec
 function internalProgramEvalCases(programId: string): ApiResponse {
   const missing = needProgram(programId);
   if (missing) return missing;
-  return { cases: evalRunner.listCases(programId, false) };
+  return { cases: evalHarness.listCases(programId, false) };
 }
 
 function internalProgramEvalCaseCreate(programId: string, body: Record<string, unknown> = {}): ApiResponse {
@@ -1095,7 +1110,7 @@ function internalProgramEvalCaseCreate(programId: string, body: Record<string, u
   const oversized = bodyWithin(body, 50_000);
   if (oversized) return oversized;
   try {
-    return { ok: true, case: evalRunner.createCase(programId, body) };
+    return { ok: true, case: evalHarness.createCase(programId, body) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -1104,14 +1119,17 @@ function internalProgramEvalCaseCreate(programId: string, body: Record<string, u
 function internalProgramEvalCaseDelete(programId: string, caseId: number): ApiResponse {
   const missing = needProgram(programId);
   if (missing) return missing;
-  return evalRunner.deleteCase(programId, caseId) ? { ok: true } : { error: "eval case not found" };
+  return evalHarness.deleteCase(programId, caseId) ? { ok: true } : { error: "eval case not found" };
 }
 
 function internalProgramEvalRun(programId: string, body: Record<string, unknown> = {}): Promise<ApiResponse> {
   const missing = needProgram(programId);
   if (missing) return Promise.resolve(missing);
-  return evalRunner
-    .run(programId, typeof body.triggeredBy === "string" ? body.triggeredBy : typeof body.actorId === "string" ? body.actorId : null)
+  return evalHarness
+    .run(
+      programId,
+      typeof body.triggeredBy === "string" ? body.triggeredBy : typeof body.actorId === "string" ? body.actorId : null,
+    )
     .then((result: ApiResponse) => result)
     .catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
 }
@@ -1119,7 +1137,7 @@ function internalProgramEvalRun(programId: string, body: Record<string, unknown>
 function internalProgramEvalRuns(programId: string, limit: string | number | null = null): ApiResponse {
   const missing = needProgram(programId);
   if (missing) return missing;
-  return { runs: evalRunner.runs(programId, Number(limit) || 50) };
+  return { runs: evalHarness.runs(programId, Number(limit) || 50) };
 }
 
 function internalProgramLifecycle(programId: string, body: Record<string, unknown> = {}): ApiResponse {
@@ -1127,6 +1145,17 @@ function internalProgramLifecycle(programId: string, body: Record<string, unknow
   if (missing) return missing;
   if (typeof body.to !== "string") return { error: "to required" };
   return lifecycle.transition(programId, body.to, typeof body.actorId === "string" ? body.actorId : null);
+}
+
+function internalProgramLiveTest(programId: string, body: Record<string, unknown> = {}): ApiResponse {
+  const missing = needProgram(programId);
+  if (missing) return missing;
+  return lifecycle.setLiveTest(
+    programId,
+    String(body.status || ""),
+    typeof body.actorId === "string" ? body.actorId : null,
+    typeof body.note === "string" ? body.note : null,
+  );
 }
 
 function internalProgramPurge(programId: string, body: Record<string, unknown> = {}): ApiResponse {
@@ -1138,9 +1167,34 @@ function internalProgramPurge(programId: string, body: Record<string, unknown> =
     if (typeof purge.purgeProgram !== "function") return { error: "purge unavailable", status: 501 };
     return purge.purgeProgram(programId, { dryRun: false });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "MODULE_NOT_FOUND") return { error: "purge unavailable", status: 501 };
+    if ((error as NodeJS.ErrnoException)?.code === "MODULE_NOT_FOUND")
+      return { error: "purge unavailable", status: 501 };
     return { error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function internalProgramTraces(programId: string, query: Record<string, string> = {}): ApiResponse {
+  const missing = needProgram(programId);
+  if (missing) return missing;
+  const traceStore = require("../pipeline/traceStore");
+  const traces = traceStore.list(programId, {
+    limit: Number(query.limit) || 100,
+    decision: query.decision || "",
+    q: query.q || "",
+  });
+  const summary: Record<string, number> = {};
+  for (const trace of traces) {
+    const decision = typeof trace.payload?.decision === "string" ? trace.payload.decision : trace.stage;
+    summary[decision] = (summary[decision] || 0) + 1;
+  }
+  return { traces, summary };
+}
+
+function internalProgramTrace(programId: string, traceId: number): ApiResponse {
+  const missing = needProgram(programId);
+  if (missing) return missing;
+  const trace = require("../pipeline/traceStore").get(programId, traceId);
+  return trace ? { trace } : { error: "trace not found" };
 }
 
 function validateSyncChannelRoles(
@@ -2385,7 +2439,10 @@ export = {
   internalProgramEvalRun,
   internalProgramEvalRuns,
   internalProgramLifecycle,
+  internalProgramLiveTest,
   internalProgramPurge,
+  internalProgramTraces,
+  internalProgramTrace,
   internalTestQuestion,
   testQuestionExpectedAction,
   sourceNamesFromContext,

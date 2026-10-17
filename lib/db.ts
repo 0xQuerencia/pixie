@@ -109,6 +109,8 @@ interface ProgramDbRow extends SqlRow {
   behavior: string | null;
   status: string | null;
   lifecycle: string | null;
+  live_test: string | null;
+  live_test_note: string | null;
   learning: string | null;
   updated_at: number;
 }
@@ -275,7 +277,10 @@ function migrateScopedState(database: DatabaseType) {
   for (const [table, definition] of Object.entries(rebuilds)) {
     if (!needsRebuild(table, table === "user_topics" ? "program_id" : "workspace_id")) continue;
     const staging = `${table}__rebuild`;
-    const oldColumns = database.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((entry) => entry.name);
+    const oldColumns = database
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((entry) => entry.name);
     database.exec("BEGIN");
     try {
       database.exec(`DROP TABLE IF EXISTS ${staging}; CREATE TABLE ${staging} ${definition}`);
@@ -1397,6 +1402,8 @@ function getDbPrograms() {
         : r.status === "paused"
           ? "paused"
           : "draft",
+    liveTest: r.live_test === "passed" || r.live_test === "failed" ? r.live_test : "pending",
+    liveTestNote: r.live_test_note || null,
     learning: r.learning === "review" ? "review" : "auto",
     updatedAt: r.updated_at,
   }));

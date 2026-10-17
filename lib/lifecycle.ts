@@ -19,9 +19,12 @@ function valid(value: unknown): value is Lifecycle {
 }
 
 function current(programId: string): Lifecycle | null {
-  const row = db.handle().query<{ lifecycle: string | null; status: string | null }, [string]>(
-    "SELECT lifecycle, status FROM programs WHERE id = ?",
-  ).get(programId);
+  const row = db
+    .handle()
+    .query<{ lifecycle: string | null; status: string | null }, [string]>(
+      "SELECT lifecycle, status FROM programs WHERE id = ?",
+    )
+    .get(programId);
   const value = row?.lifecycle;
   if (valid(value)) return value;
   if (row?.status === "live") return "active";
@@ -30,11 +33,10 @@ function current(programId: string): Lifecycle | null {
 }
 
 function set(programId: string, lifecycle: Lifecycle): boolean {
-  const result = db.handle().query("UPDATE programs SET lifecycle = ?, updated_at = ? WHERE id = ?").run(
-    lifecycle,
-    Date.now(),
-    programId,
-  );
+  const result = db
+    .handle()
+    .query("UPDATE programs SET lifecycle = ?, updated_at = ? WHERE id = ?")
+    .run(lifecycle, Date.now(), programId);
   programs.invalidate?.();
   return result.changes > 0;
 }
@@ -44,7 +46,9 @@ function ownerOrAdmin(programId: string, actor: string | null): boolean {
   try {
     if (require("./config").isAdmin(actor)) return true;
   } catch (_) {}
-  const helper = (db.listHelpers(programId, true) || []).find((item: Record<string, unknown>) => item.user_id === actor);
+  const helper = (db.listHelpers(programId, true) || []).find(
+    (item: Record<string, unknown>) => item.user_id === actor,
+  );
   return Boolean(helper && ["owner", "admin", "organizer"].includes(String(helper.role)));
 }
 
@@ -66,19 +70,24 @@ function blockersFor(programId: string, from: Lifecycle, to: Lifecycle, actor: s
   if (from === "draft" && to === "testing") {
     const program = programs.get(programId);
     const hasSource = Boolean(program?.sources?.length) || docs.sourceStates(programId).some((state) => state.ok === 1);
-    if (docs.docSections(programId).length === 0 && !hasSource) blockers.push("at least one active official doc or source is required");
+    if (docs.docSections(programId).length === 0 && !hasSource)
+      blockers.push("at least one active official doc or source is required");
   }
   if (from === "testing" && to === "approved") {
     if (!ownerOrAdmin(programId, actor)) blockers.push("testing->approved requires a program owner or admin");
-    const run = db.handle().query<{ status: string; content_hash: string }, [string]>(
-      "SELECT status, content_hash FROM program_eval_runs WHERE program_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
-    ).get(programId);
+    const run = db
+      .handle()
+      .query<{ status: string; content_hash: string }, [string]>(
+        "SELECT status, content_hash FROM program_eval_runs WHERE program_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+      )
+      .get(programId);
     if (!run || run.status !== "passed") blockers.push("latest eval run must be passed");
     if (!run || run.content_hash !== docs.contentHash(programId)) blockers.push("latest eval run is stale");
   }
   if (from === "approved" && to === "active") {
     const claims = db.listProgramChannels(programId);
-    if (!claims.some((claim: Record<string, unknown>) => claim.kind === "help")) blockers.push("a mapped help channel is required");
+    if (!claims.some((claim: Record<string, unknown>) => claim.kind === "help"))
+      blockers.push("a mapped help channel is required");
     const ticketing = programs.get(programId)?.ticketsEnabled !== false;
     if (ticketing && !claims.some((claim: Record<string, unknown>) => claim.kind === "organizer")) {
       blockers.push("a mapped organizer channel is required while tickets are enabled");

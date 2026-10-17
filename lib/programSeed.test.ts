@@ -9,7 +9,7 @@ const os = require("node:os");
 const db = require("./db");
 const programs = require("./programs");
 const programDocs = require("./programDocs");
-const evalRunner = require("./evalRunner");
+const evalHarness = require("./evalHarness");
 const programSeed = require("./programSeed");
 const testPrograms = require("./testPrograms");
 const knowledge = require("./knowledge");
@@ -49,7 +49,7 @@ test("applying a seed creates a draft program with claimed channels, docs and ca
   assert.equal(program.lifecycle, "draft");
   assert.equal(program.helpChannel, "C0DEMOHELP1");
   assert.equal(db.getChannelOwner(WORKSPACE, "C0DEMOORG01").kind, "organizer");
-  assert.equal(evalRunner.listCases("demo-program").length, 2);
+  assert.equal(evalHarness.listCases("demo-program").length, 2);
   assert.match(knowledge.getContext("what do participants get", "demo-program"), /pineapple sticker/);
 });
 
@@ -59,7 +59,7 @@ test("seeding twice changes nothing", () => {
   assert.equal(again.created, false);
   assert.deepEqual(again.docs, { created: 0, updated: 0, unchanged: 1, deactivated: 0 });
   assert.equal(programDocs.listDocs("demo-program").length, 1);
-  assert.equal(evalRunner.listCases("demo-program").length, 2);
+  assert.equal(evalHarness.listCases("demo-program").length, 2);
 });
 
 test("a seed never activates a program that was already deployed", () => {
@@ -91,7 +91,12 @@ test("dry run writes nothing", () => {
 
 test("a channel owned by another program blocks the seed", () => {
   db.saveProgram({ id: "other-program", name: "Other" });
-  db.claimProgramChannel({ workspaceId: WORKSPACE, programId: "other-program", channelId: "C0DEMOHELP1", kind: "help" });
+  db.claimProgramChannel({
+    workspaceId: WORKSPACE,
+    programId: "other-program",
+    channelId: "C0DEMOHELP1",
+    kind: "help",
+  });
   programs.invalidate();
   assert.throws(() => programSeed.apply(load(DEMO), { workspaceId: WORKSPACE }), /already claimed by other-program/);
 });
@@ -102,10 +107,18 @@ test("validation reports file and field for every problem", () => {
   fs.mkdirSync(path.join(bad, "docs"), { recursive: true });
   fs.writeFileSync(
     path.join(bad, "program.json"),
-    JSON.stringify({ id: "bad-program", name: "Bad", channels: { help: "not-a-channel" }, sources: [{ name: "x", url: "u", type: "ftp" }] }),
+    JSON.stringify({
+      id: "bad-program",
+      name: "Bad",
+      channels: { help: "not-a-channel" },
+      sources: [{ name: "x", url: "u", type: "ftp" }],
+    }),
   );
   fs.writeFileSync(path.join(bad, "docs", "x.md"), "---\nsection: nonsense\ntrust: supporting\ntitle: X\n---\nbody\n");
-  fs.writeFileSync(path.join(bad, "eval.json"), JSON.stringify([{ kind: "weird", question: "q", expect: { mode: "clarify" } }]));
+  fs.writeFileSync(
+    path.join(bad, "eval.json"),
+    JSON.stringify([{ kind: "weird", question: "q", expect: { mode: "clarify" } }]),
+  );
   const { errors } = programSeed.loadProgramDir(bad);
   const text = errors.join("\n");
   assert.match(text, /program\.json: channels: invalid Slack id "not-a-channel"/);
@@ -134,7 +147,10 @@ test("settings from program.json are applied and unknown or mistyped settings ar
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seed-"));
   const bad = path.join(dir, "bad-settings");
   fs.mkdirSync(bad);
-  fs.writeFileSync(path.join(bad, "program.json"), JSON.stringify({ id: "bad-settings", name: "Bad", settings: { ticketsEnabled: "yes", madeUp: true } }));
+  fs.writeFileSync(
+    path.join(bad, "program.json"),
+    JSON.stringify({ id: "bad-settings", name: "Bad", settings: { ticketsEnabled: "yes", madeUp: true } }),
+  );
   const text = programSeed.loadProgramDir(bad).errors.join("\n");
   assert.match(text, /settings\.ticketsEnabled: expected boolean/);
   assert.match(text, /settings\.madeUp: unknown setting/);

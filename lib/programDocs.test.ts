@@ -40,7 +40,10 @@ test("program docs are CRUD, versioned, supersedable, and program-scoped", () =>
     updatedBy: "owner-b",
   });
 
-  assert.deepEqual(docs.docSections("docs-a").map((item) => item.docId), [official.id]);
+  assert.deepEqual(
+    docs.docSections("docs-a").map((item) => item.docId),
+    [official.id],
+  );
   assert.equal(docs.listBySection("docs-a", "faq", true).length, 2);
   assert.equal(docs.docSections("docs-b")[0].text, "B answer");
 

@@ -85,11 +85,7 @@ function contentChanged(programId: string, actor: string | null = null) {
 }
 
 function row(id: number | string): ProgramDoc | null {
-  return (
-    handle()
-      .query<ProgramDoc, [number | string]>("SELECT * FROM program_docs WHERE id = ?")
-      .get(id) || null
-  );
+  return handle().query<ProgramDoc, [number | string]>("SELECT * FROM program_docs WHERE id = ?").get(id) || null;
 }
 
 function required(value: unknown, name: string, max: number): string {
@@ -215,7 +211,8 @@ function updateDoc(programId: string, docId: number, input: DocInput): ProgramDo
 }
 
 function deleteDoc(programId: string, docId: number): boolean {
-  const deleted = handle().query("DELETE FROM program_docs WHERE program_id = ? AND id = ?").run(programId, docId).changes > 0;
+  const deleted =
+    handle().query("DELETE FROM program_docs WHERE program_id = ? AND id = ?").run(programId, docId).changes > 0;
   if (deleted) contentChanged(programId);
   return deleted;
 }
@@ -224,12 +221,12 @@ function supersedeDoc(programId: string, docId: number, input: DocInput): Progra
   const existing = getDoc(programId, docId);
   if (!existing) return null;
   const replacement = createDoc(programId, { ...input, supersedes_id: docId } as DocInput & { supersedes_id: number });
-  handle().query("UPDATE program_docs SET active = 0, updated_at = ? WHERE program_id = ? AND id = ?").run(
-    Date.now(),
-    programId,
-    docId,
-  );
-  handle().query("UPDATE program_docs SET supersedes_id = ? WHERE program_id = ? AND id = ?").run(docId, programId, replacement.id);
+  handle()
+    .query("UPDATE program_docs SET active = 0, updated_at = ? WHERE program_id = ? AND id = ?")
+    .run(Date.now(), programId, docId);
+  handle()
+    .query("UPDATE program_docs SET supersedes_id = ? WHERE program_id = ? AND id = ?")
+    .run(docId, programId, replacement.id);
   const superseded = getDoc(programId, replacement.id);
   contentChanged(programId, updatedBy(input));
   return superseded;
@@ -265,7 +262,15 @@ function upsertSourceState(
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(program_id, source_key) DO UPDATE SET text = excluded.text, content_hash = excluded.content_hash, fetched_at = excluded.fetched_at, ok = excluded.ok, error = excluded.error`,
     )
-    .run(programId, cleanKey, cleanText, contentHash, options.fetchedAt || Date.now(), options.ok === false ? 0 : 1, options.error || null);
+    .run(
+      programId,
+      cleanKey,
+      cleanText,
+      contentHash,
+      options.fetchedAt || Date.now(),
+      options.ok === false ? 0 : 1,
+      options.error || null,
+    );
   const state = sourceState(programId, cleanKey);
   contentChanged(programId);
   return state;
@@ -274,7 +279,9 @@ function upsertSourceState(
 function sourceState(programId: string, sourceKey: string): SourceStateRow | null {
   return (
     handle()
-      .query<SourceStateRow, [string, string]>("SELECT * FROM program_source_state WHERE program_id = ? AND source_key = ?")
+      .query<SourceStateRow, [string, string]>(
+        "SELECT * FROM program_source_state WHERE program_id = ? AND source_key = ?",
+      )
       .get(programId, sourceKey) || null
   );
 }
@@ -302,7 +309,10 @@ function contentHash(programId: string): string {
     .filter((doc) => doc.trust === "official")
     .sort((a, b) => a.id - b.id)
     .map((doc) => ({ id: doc.id, version: doc.version, body: doc.body }));
-  const states = sourceStates(programId).map((state) => ({ sourceKey: state.source_key, contentHash: state.content_hash }));
+  const states = sourceStates(programId).map((state) => ({
+    sourceKey: state.source_key,
+    contentHash: state.content_hash,
+  }));
   const instructions = {
     behavior: program?.behavior || null,
     pinnedRules: program?.pinnedRules || [],

@@ -25,7 +25,13 @@ interface TraceStep {
 }
 
 function tokens(text: string): string[] {
-  return [...new Set(String(text || "").toLocaleLowerCase().match(/[a-z0-9][a-z0-9_-]*/g) || [])];
+  return [
+    ...new Set(
+      String(text || "")
+        .toLocaleLowerCase()
+        .match(/[a-z0-9][a-z0-9_-]*/g) || [],
+    ),
+  ];
 }
 
 function score(question: string, text: string): number {
@@ -36,10 +42,18 @@ function score(question: string, text: string): number {
 }
 
 function excerpt(text: string): string {
-  return String(text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
 }
 
-async function traceStep<T>(steps: TraceStep[], name: string, detail: string, action: () => T | Promise<T>): Promise<T> {
+async function traceStep<T>(
+  steps: TraceStep[],
+  name: string,
+  detail: string,
+  action: () => T | Promise<T>,
+): Promise<T> {
   const started = Date.now();
   const result = await action();
   steps.push({ name, ms: Date.now() - started, detail });
@@ -121,10 +135,20 @@ async function inspect(programId: string, question: string, options: InspectOpti
       answerWithoutWrites(cleanQuestion, program, context),
     );
   } catch (error) {
-    steps.push({ name: "answer", ms: 0, detail: `answer path failed: ${error instanceof Error ? error.message : String(error)}` });
+    steps.push({
+      name: "answer",
+      ms: 0,
+      detail: `answer path failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
   }
   const grounded = Boolean(result && require("./respond").isGroundedAnswer(result));
-  const decision = grounded ? "answer" : program.autoEscalate === false ? "abstain" : escalation(program, cleanQuestion, "no grounded answer") ? "escalate" : "abstain";
+  const decision = grounded
+    ? "answer"
+    : program.autoEscalate === false
+      ? "abstain"
+      : escalation(program, cleanQuestion, "no grounded answer")
+        ? "escalate"
+        : "abstain";
   const escalationPreview = decision === "escalate" ? escalation(program, cleanQuestion, "no grounded answer") : null;
   steps.push({ name: "decision", ms: 0, detail: `${decision}; role=${options.role || "inspect"}` });
   steps.push({ name: "escalation_preview", ms: 0, detail: escalationPreview ? "available" : "none" });

@@ -114,7 +114,10 @@ function targetsFor(db: DatabaseLike): Map<string, ScopedTable> {
 function selector(db: DatabaseLike, table: ScopedTable, programId: string): { where: string; params: Binding[] } {
   if (table.name === "programs") return { where: "id = ?", params: [programId] };
   if (table.name === "job_leases") {
-    return { where: "(name = ? OR substr(name, -length(?) - 1) = ':' || ?)", params: [programId, programId, programId] };
+    return {
+      where: "(name = ? OR substr(name, -length(?) - 1) = ':' || ?)",
+      params: [programId, programId, programId],
+    };
   }
   if (CHANNEL_STATE_TABLES.includes(table.name) && !table.columns.has("program_id")) {
     const channels = programChannels(db, programId);
@@ -142,7 +145,9 @@ function selectorForIds(db: DatabaseLike, table: ScopedTable, programIds: string
 
 function countRows(db: DatabaseLike, table: ScopedTable, programId: string): number {
   const { where, params } = selector(db, table, programId);
-  return Number(objectRow(db.query(`SELECT COUNT(*) AS count FROM ${quote(table.name)} WHERE ${where}`).get(...params)).count || 0);
+  return Number(
+    objectRow(db.query(`SELECT COUNT(*) AS count FROM ${quote(table.name)} WHERE ${where}`).get(...params)).count || 0,
+  );
 }
 
 function digest(db: DatabaseLike, programIds: string[]): Record<string, TableDigest> {

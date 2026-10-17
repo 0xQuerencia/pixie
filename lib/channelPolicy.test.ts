@@ -21,13 +21,24 @@ test("production roles require program claims and active lifecycle", () => {
     channels: ["C-POLICY-MAIN"],
   });
   db.claimProgramChannel({ workspaceId: "T-POLICY", channelId: "C-POLICY-HELP", programId: "policy-a", kind: "help" });
-  db.claimProgramChannel({ workspaceId: "T-POLICY", channelId: "C-POLICY-MAIN", programId: "policy-a", kind: "discussion" });
+  db.claimProgramChannel({
+    workspaceId: "T-POLICY",
+    channelId: "C-POLICY-MAIN",
+    programId: "policy-a",
+    kind: "discussion",
+  });
 
   assert.equal(policy.resolve("C-POLICY-HELP", "T-POLICY").role, "help");
   assert.equal(policy.resolve("C-POLICY-MAIN", "T-POLICY").role, "main");
   assert.equal(policy.resolve("C-POLICY-UNCLAIMED", "T-POLICY").role, "none");
 
-  programs.saveProgram({ id: "policy-a", name: "Policy A", lifecycle: "draft", helpChannel: "C-POLICY-HELP", channels: ["C-POLICY-MAIN"] });
+  programs.saveProgram({
+    id: "policy-a",
+    name: "Policy A",
+    lifecycle: "draft",
+    helpChannel: "C-POLICY-HELP",
+    channels: ["C-POLICY-MAIN"],
+  });
   assert.equal(policy.resolve("C-POLICY-HELP", "T-POLICY").settings.enabled, false);
 });
 

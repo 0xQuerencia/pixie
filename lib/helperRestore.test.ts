@@ -33,11 +33,29 @@ test("active helpers and their expertise come back for programs that exist, and 
   try {
     const dry = helperRestore.restore(file, { execute: false });
     assert.equal(db.listHelpers("restore-a").length, 0, "dry run changes nothing");
-    assert.deepEqual(dry.map((row: { programId: string; helpers: number }) => [row.programId, row.helpers]), [["gone-prog", 1], ["restore-a", 1]]);
+    assert.deepEqual(
+      dry.map((row: { programId: string; helpers: number }) => [row.programId, row.helpers]),
+      [
+        ["gone-prog", 1],
+        ["restore-a", 1],
+      ],
+    );
     const real = helperRestore.restore(file, { execute: true });
-    assert.match(real.find((row: { programId: string }) => row.programId === "gone-prog").skipped, /not in the live database/);
-    assert.deepEqual(db.listHelpers("restore-a").map((row: { user_id: string; role: string }) => [row.user_id, row.role]), [["U1", "owner"]]);
-    assert.equal(db.handle().query("SELECT solved_count AS n FROM helper_expertise WHERE program_id = 'restore-a' AND tag = 'billing'").get().n, 4);
+    assert.match(
+      real.find((row: { programId: string }) => row.programId === "gone-prog").skipped,
+      /not in the live database/,
+    );
+    assert.deepEqual(
+      db.listHelpers("restore-a").map((row: { user_id: string; role: string }) => [row.user_id, row.role]),
+      [["U1", "owner"]],
+    );
+    assert.equal(
+      db
+        .handle()
+        .query("SELECT solved_count AS n FROM helper_expertise WHERE program_id = 'restore-a' AND tag = 'billing'")
+        .get().n,
+      4,
+    );
     assert.equal(db.listHelpers("gone-prog").length, 0);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -45,7 +63,10 @@ test("active helpers and their expertise come back for programs that exist, and 
 });
 
 test("restoring is idempotent and can be limited to one program", () => {
-  testPrograms.set([{ id: "restore-b", name: "B" }, { id: "restore-c", name: "C" }]);
+  testPrograms.set([
+    { id: "restore-b", name: "B" },
+    { id: "restore-c", name: "C" },
+  ]);
   const { dir, file } = archiveWith(`
     INSERT INTO program_helpers (program_id, user_id, helper_source, role, active, added_at) VALUES ('restore-b', 'U1', 'manual', 'helper', 1, 1), ('restore-c', 'U2', 'manual', 'helper', 1, 1);
   `);

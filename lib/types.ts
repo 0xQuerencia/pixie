@@ -53,6 +53,8 @@ export interface Program {
   behavior: Record<string, unknown> | null;
   status: ProgramStatus | null;
   lifecycle?: ProgramLifecycle;
+  liveTest?: "pending" | "passed" | "failed";
+  liveTestNote?: string | null;
   requireGroundedAnswer?: boolean;
   organizer_channel?: string;
   organizer_channel_id?: string;

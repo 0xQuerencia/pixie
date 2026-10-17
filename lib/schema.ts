@@ -480,6 +480,8 @@ const MIGRATIONS = [
   ["programs", "behavior", "ALTER TABLE programs ADD COLUMN behavior TEXT"],
   ["programs", "status", "ALTER TABLE programs ADD COLUMN status TEXT"],
   ["programs", "learning", "ALTER TABLE programs ADD COLUMN learning TEXT NOT NULL DEFAULT 'auto'"],
+  ["programs", "live_test", "ALTER TABLE programs ADD COLUMN live_test TEXT NOT NULL DEFAULT 'pending'"],
+  ["programs", "live_test_note", "ALTER TABLE programs ADD COLUMN live_test_note TEXT"],
 
   [
     "program_helpers",

@@ -1,6 +1,6 @@
 import db = require("../lib/db");
 import programs = require("../lib/programs");
-import evalRunner = require("../lib/evalRunner");
+import evalHarness = require("../lib/evalHarness");
 
 const args = process.argv.slice(2);
 const programId = args[0] || args[args.indexOf("--program") + 1];
@@ -14,7 +14,7 @@ if (!programId || programId.startsWith("--")) {
 } else {
   db.open();
   const triggeredBy = args[1] && !args[1].startsWith("--") ? args[1] : "cli";
-  const result = await evalRunner.run(programId, triggeredBy);
+  const result = await evalHarness.run(programId, triggeredBy);
   console.log(`program=${programId} status=${result.status} passed=${result.passed}/${result.total} failed=${result.failed}`);
   console.log(`run=${result.id} content_hash=${result.contentHash}`);
   process.exitCode = result.status === "passed" ? 0 : 1;

@@ -54,22 +54,12 @@ function seed() {
      INSERT INTO draft_sandbox_programs VALUES ('purge-a', '{}', 1), ('purge-b', '{}', 1);
      INSERT INTO draft_sandbox_sources VALUES ('purge-a', 'a', 'a'), ('purge-b', 'b', 'b');`,
   );
-  h.query("INSERT INTO answer_cache (question_hash, program_id, question, source, answer, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
-    "a",
-    "purge-a",
-    "a",
-    "a",
-    "a",
-    now,
-  );
-  h.query("INSERT INTO answer_cache (question_hash, program_id, question, source, answer, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
-    "b",
-    "purge-b",
-    "b",
-    "b",
-    "b",
-    now,
-  );
+  h.query(
+    "INSERT INTO answer_cache (question_hash, program_id, question, source, answer, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run("a", "purge-a", "a", "a", "a", now);
+  h.query(
+    "INSERT INTO answer_cache (question_hash, program_id, question, source, answer, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run("b", "purge-b", "b", "b", "b", now);
   h.query("INSERT INTO job_leases (name, owner, expires_at) VALUES (?, ?, ?)").run(
     "ticket-history-backfill:purge-a",
     "a",
@@ -145,17 +135,33 @@ test("purge deletes all owned state transactionally, keeps audit events, and lea
 
 function threadState(channel: string, thread: string) {
   const h = db.handle();
-  h.query("INSERT INTO threads (workspace_id, channel, thread_ts, updated_at) VALUES ('T1', ?, ?, 1)").run(channel, thread);
-  h.query("INSERT INTO muted_threads (workspace_id, channel, thread_ts, muted_at) VALUES ('T1', ?, ?, 1)").run(channel, thread);
-  h.query("INSERT INTO thread_takeover (workspace_id, channel, thread_ts, created_at) VALUES ('T1', ?, ?, 1)").run(channel, thread);
-  h.query("INSERT INTO answered_messages (workspace_id, channel, ts, answered_at) VALUES ('T1', ?, ?, 1)").run(channel, thread);
+  h.query("INSERT INTO threads (workspace_id, channel, thread_ts, updated_at) VALUES ('T1', ?, ?, 1)").run(
+    channel,
+    thread,
+  );
+  h.query("INSERT INTO muted_threads (workspace_id, channel, thread_ts, muted_at) VALUES ('T1', ?, ?, 1)").run(
+    channel,
+    thread,
+  );
+  h.query("INSERT INTO thread_takeover (workspace_id, channel, thread_ts, created_at) VALUES ('T1', ?, ?, 1)").run(
+    channel,
+    thread,
+  );
+  h.query("INSERT INTO answered_messages (workspace_id, channel, ts, answered_at) VALUES ('T1', ?, ?, 1)").run(
+    channel,
+    thread,
+  );
 }
 
 test("purge removes thread state of the program's channels and nothing else", () => {
   seed();
   const h = db.handle();
-  h.query("INSERT INTO program_channels (workspace_id, channel_id, program_id, kind, created_at) VALUES ('T1', 'C-A', 'purge-a', 'help', 1)").run();
-  h.query("INSERT INTO program_channels (workspace_id, channel_id, program_id, kind, created_at) VALUES ('T1', 'C-B', 'purge-b', 'help', 1)").run();
+  h.query(
+    "INSERT INTO program_channels (workspace_id, channel_id, program_id, kind, created_at) VALUES ('T1', 'C-A', 'purge-a', 'help', 1)",
+  ).run();
+  h.query(
+    "INSERT INTO program_channels (workspace_id, channel_id, program_id, kind, created_at) VALUES ('T1', 'C-B', 'purge-b', 'help', 1)",
+  ).run();
   threadState("C-A", "100.1");
   threadState("C-B", "200.1");
   purgeProgram(h, "purge-a");
@@ -168,10 +174,17 @@ test("purge removes thread state of the program's channels and nothing else", ()
 test("job leases match the program id exactly, not as a substring", () => {
   seed();
   const h = db.handle();
-  h.query("INSERT INTO programs (id, name, posture, scope, updated_at) VALUES ('app', 'App', 'active', 'program', 1)").run();
-  h.query("INSERT INTO job_leases (name, owner, expires_at) VALUES ('appraisal-recompute', 'x', 1), ('ticket-history-backfill:app', 'x', 1)").run();
+  h.query(
+    "INSERT INTO programs (id, name, posture, scope, updated_at) VALUES ('app', 'App', 'active', 'program', 1)",
+  ).run();
+  h.query(
+    "INSERT INTO job_leases (name, owner, expires_at) VALUES ('appraisal-recompute', 'x', 1), ('ticket-history-backfill:app', 'x', 1)",
+  ).run();
   purgeProgram(h, "app");
-  const names = h.query("SELECT name FROM job_leases ORDER BY name").all().map((row: { name: string }) => row.name);
+  const names = h
+    .query("SELECT name FROM job_leases ORDER BY name")
+    .all()
+    .map((row: { name: string }) => row.name);
   assert.ok(names.includes("appraisal-recompute"));
   assert.ok(!names.includes("ticket-history-backfill:app"));
 });

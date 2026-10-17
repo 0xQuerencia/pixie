@@ -3,7 +3,7 @@ import path = require("node:path");
 import db = require("./db");
 import programs = require("./programs");
 import programDocs = require("./programDocs");
-import evalRunner = require("./evalRunner");
+import evalHarness = require("./evalHarness");
 import programInstructions = require("./programInstructions");
 import type { ProgramSource } from "./types";
 
@@ -83,7 +83,10 @@ function loadDocs(dir: string, errors: string[]): SeedDoc[] {
   const docsDir = path.join(dir, "docs");
   if (!fs.existsSync(docsDir)) return [];
   const docs: SeedDoc[] = [];
-  for (const name of fs.readdirSync(docsDir).filter((entry) => entry.endsWith(".md")).sort()) {
+  for (const name of fs
+    .readdirSync(docsDir)
+    .filter((entry) => entry.endsWith(".md"))
+    .sort()) {
     const file = path.join(docsDir, name);
     const parsed = frontMatter(fs.readFileSync(file, "utf8"));
     if (!parsed) {
@@ -91,7 +94,8 @@ function loadDocs(dir: string, errors: string[]): SeedDoc[] {
       continue;
     }
     const { meta, body } = parsed;
-    if (!(programDocs.DOC_SECTIONS as readonly string[]).includes(meta.section)) errors.push(`${file}: section: unknown "${meta.section}"`);
+    if (!(programDocs.DOC_SECTIONS as readonly string[]).includes(meta.section))
+      errors.push(`${file}: section: unknown "${meta.section}"`);
     if (meta.trust !== "official") errors.push(`${file}: trust: seed docs must be official`);
     if (!meta.title) errors.push(`${file}: title: required`);
     if (!body) errors.push(`${file}: body: empty`);
@@ -108,9 +112,9 @@ function loadCases(dir: string, errors: string[]): SeedCase[] {
   const cases: SeedCase[] = [];
   data.forEach((item, index) => {
     const kind = (item as SeedCase)?.kind;
-    if (!evalRunner.EVAL_KINDS.includes(kind as never)) errors.push(`${file}: [${index}].kind: unknown "${kind}"`);
+    if (!evalHarness.EVAL_KINDS.includes(kind as never)) errors.push(`${file}: [${index}].kind: unknown "${kind}"`);
     try {
-      evalRunner.parseExpect((item as SeedCase)?.expect || {});
+      evalHarness.parseExpect((item as SeedCase)?.expect || {});
     } catch (error: unknown) {
       errors.push(`${file}: [${index}].expect: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -126,7 +130,8 @@ function normalizeSources(raw: unknown, file: string, errors: string[]): Program
     const source = { ...(entry as ProgramSource) };
     source.type = SOURCE_ALIASES[String(source.type)] || source.type;
     if (!source.name || !source.url) errors.push(`${file}: sources[${index}]: name and url required`);
-    if (!SOURCE_TYPES.has(String(source.type))) errors.push(`${file}: sources[${index}].type: unknown "${source.type}"`);
+    if (!SOURCE_TYPES.has(String(source.type)))
+      errors.push(`${file}: sources[${index}].type: unknown "${source.type}"`);
     return source;
   });
 }
@@ -148,7 +153,8 @@ function loadProgramDir(dir: string): { seed: SeedProgram | null; errors: string
   const settings = (raw.settings || {}) as Record<string, unknown>;
   for (const [key, value] of Object.entries(settings)) {
     if (!SETTING_TYPES[key]) errors.push(`${file}: settings.${key}: unknown setting`);
-    else if (typeof value !== SETTING_TYPES[key]) errors.push(`${file}: settings.${key}: expected ${SETTING_TYPES[key]}`);
+    else if (typeof value !== SETTING_TYPES[key])
+      errors.push(`${file}: settings.${key}: expected ${SETTING_TYPES[key]}`);
   }
   const problem = programInstructions.validate(raw.instructions ?? null);
   if (problem) errors.push(`${file}: ${problem}`);
@@ -186,7 +192,16 @@ function syncDocs(seed: SeedProgram, dryRun: boolean): SeedResult["docs"] {
     const key = `${doc.section}\u0000${doc.title}`;
     wanted.add(key);
     const current = existing.find((item) => item.section === doc.section && item.title === doc.title);
-    const input = { section: doc.section, title: doc.title, body: doc.body, trust: "official", origin: "manual", sourceRef: doc.sourceRef, updatedBy: "seed", active: true };
+    const input = {
+      section: doc.section,
+      title: doc.title,
+      body: doc.body,
+      trust: "official",
+      origin: "manual",
+      sourceRef: doc.sourceRef,
+      updatedBy: "seed",
+      active: true,
+    };
     if (!current) {
       counts.created += 1;
       if (!dryRun) programDocs.createDoc(seed.id, input);
@@ -233,10 +248,10 @@ function apply(seed: SeedProgram, options: { workspaceId: string; dryRun?: boole
   }
   const docs = syncDocs(seed, dryRun);
   if (!dryRun) {
-    for (const item of evalRunner.listCases(seed.id, false).filter((row) => row.origin === "manual")) {
-      evalRunner.deleteCase(seed.id, item.id);
+    for (const item of evalHarness.listCases(seed.id, false).filter((row) => row.origin === "manual")) {
+      evalHarness.deleteCase(seed.id, item.id);
     }
-    for (const item of seed.cases) evalRunner.createCase(seed.id, { ...item, origin: "manual" });
+    for (const item of seed.cases) evalHarness.createCase(seed.id, { ...item, origin: "manual" });
   }
   return { programId: seed.id, created: !existing, docs, cases: seed.cases.length, channels: claims.length };
 }

@@ -344,6 +344,41 @@ function forThread(programId: string, threadTs: string) {
   );
 }
 
+function list(programId: string, options: { limit?: number; decision?: string; q?: string } = {}) {
+  ensureSchema();
+  const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 500);
+  const rows = readRows(
+    db
+      .handle()
+      .query(
+        `SELECT id,ticket_id,stage,payload_json,created_at,request_id
+       FROM answer_traces WHERE program_id = ? AND expires_at > ?
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .all(programId, Date.now(), limit) as TraceRow[],
+  );
+  return rows.filter((row: Record<string, unknown>) => {
+    const payload = (row.payload || {}) as Record<string, unknown>;
+    const decision = typeof payload.decision === "string" ? payload.decision : "";
+    return (
+      (!options.decision || decision === options.decision) &&
+      (!options.q || JSON.stringify(payload).toLowerCase().includes(options.q.toLowerCase()))
+    );
+  });
+}
+
+function get(programId: string, id: number) {
+  ensureSchema();
+  const row = db
+    .handle()
+    .query(
+      `SELECT id,ticket_id,stage,payload_json,created_at,request_id
+     FROM answer_traces WHERE program_id = ? AND id = ? AND expires_at > ?`,
+    )
+    .get(programId, id, Date.now()) as TraceRow | null;
+  return row ? readRows([row])[0] || null : null;
+}
+
 function sweepExpired(programId?: string, now = Date.now()): number {
   ensureSchema();
   if (programId !== undefined) {
@@ -353,4 +388,4 @@ function sweepExpired(programId?: string, now = Date.now()): number {
   return db.handle().query("DELETE FROM answer_traces WHERE expires_at <= ?").run(now).changes;
 }
 
-export = { append, forTicket, forThread, sweepExpired, ensureSchema, sanitize, DEFAULT_TTL_MS };
+export = { append, forTicket, forThread, list, get, sweepExpired, ensureSchema, sanitize, DEFAULT_TTL_MS };
