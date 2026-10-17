@@ -79,7 +79,10 @@ function blockersFor(programId: string, from: Lifecycle, to: Lifecycle, actor: s
   if (from === "approved" && to === "active") {
     const claims = db.listProgramChannels(programId);
     if (!claims.some((claim: Record<string, unknown>) => claim.kind === "help")) blockers.push("a mapped help channel is required");
-    if (!claims.some((claim: Record<string, unknown>) => claim.kind === "organizer")) blockers.push("a mapped organizer channel is required");
+    const ticketing = programs.get(programId)?.ticketsEnabled !== false;
+    if (ticketing && !claims.some((claim: Record<string, unknown>) => claim.kind === "organizer")) {
+      blockers.push("a mapped organizer channel is required while tickets are enabled");
+    }
     if (db.listHelpers(programId, true).length < 1) blockers.push("at least one active helper is required");
   }
   return blockers;

@@ -1,0 +1,79 @@
+{
+  "id": "jame-gam",
+  "name": "Jame Gam",
+  "description": "Jame Gam is a community of teenagers who enter game jams together, run by Hack Club. Build a game, get prizes — free, international, no experience needed.",
+  "supportName": "Jame Gam Help",
+  "posture": "active",
+  "channels": {
+    "help": "C0C14QK28LD",
+    "organizer": "C0C17F7DB38",
+    "main": []
+  },
+  "sources": [
+    {
+      "name": "jame gam official site",
+      "type": "web",
+      "url": "https://jamegam.hackclub.com/"
+    },
+    {
+      "name": "jame gam official prize list",
+      "type": "web",
+      "url": "https://jamegam.hackclub.com/prizes"
+    },
+    {
+      "name": "hackclub/jamegam (official site source code, FAQ, jam config, prize pool)",
+      "type": "repo",
+      "url": "https://github.com/hackclub/jamegam"
+    },
+    {
+      "name": "the jame gam game jam (current October 2026 cycle) on itch.io",
+      "type": "web",
+      "url": "https://itch.io/jam/jame-gam-game-jam"
+    },
+    {
+      "name": "jame gam submission form",
+      "type": "web",
+      "url": "https://forms.hackclub.com/jame-gam-game-jam"
+    },
+    {
+      "name": "jame gam prize suggestion form",
+      "type": "web",
+      "url": "https://forms.hackclub.com/jame-gam-prize-suggestion"
+    }
+  ],
+  "instructions": {
+    "mayAnswer": [
+      "what Jame Gam is, who runs it, and that it is free and international",
+      "eligibility: ages 13–18, and a verified Hack Club account to get prizes",
+      "the cycle: sign up, build during the jam, submit twice, rate games, get a prize",
+      "participation rules: custom game, asset packs and crediting, AI limits, content rules, source sharing",
+      "current jam dates and submission form timing from the official jam page",
+      "prizes: pick any one item or any two indie games, stickers, and the live prize list"
+    ],
+    "mustEscalate": [
+      "anything about a specific person's submission, review, rejection, or re-review",
+      "prize orders, shipping, missing DMs, or fulfillment in progress",
+      "late or missed submissions, extensions, and one-off exceptions",
+      "region-limited prize availability and prize substitutions",
+      "Hack Club account or verification problems",
+      "anything official sources mark as varying or case-by-case"
+    ],
+    "neverDo": [
+      "answer or claim in public Jame Gam channels (#jame-gam, #jame-gam-help)",
+      "use program-specific facts from another Hack Club program (pixl, hardwire, twisted, …) for Jame Gam answers",
+      "state old jam dates, windows, or rules as current",
+      "promise acceptance, review timelines, fulfillment dates, tracking, or substitutions for a specific person",
+      "invent deadlines, queue positions, prize stock, or policies not in official sources"
+    ]
+  },
+  "links": {},
+  "settings": {
+    "ticketsEnabled": true,
+    "autoEscalate": true,
+    "aiAnswers": true,
+    "incidentMode": "ANSWER_AND_TRACK",
+    "publicTicketsEnabled": true,
+    "supportActive": true,
+    "autoAssign": false
+  }
+}

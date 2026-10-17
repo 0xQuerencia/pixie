@@ -202,3 +202,5 @@ test("a live instance is detected from unexpired job leases", () => {
   h.query("INSERT INTO job_leases (name, owner, expires_at) VALUES ('sla-check', 'pod', ?)").run(Date.now() + 60000);
   assert.deepEqual(runningInstances(h), ["sla-check"]);
 });
+
+export {};

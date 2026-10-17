@@ -52,3 +52,45 @@ test("lifecycle enforces blockers, audits transitions, and archives claims", () 
   assert.equal(db.listProgramChannels("life-a").length, 0);
   assert.ok(db.listAuditEvents({ programId: "life-a" }).some((event) => event.action === "program.lifecycle.transition"));
 });
+function activeProgram(id: string) {
+  programs.saveProgram({ id, name: id, lifecycle: "active", helpChannel: `C-${id}-H`, channels: [`C-${id}-H`] });
+  db.claimProgramChannel({ workspaceId: "TW-LIFE", channelId: `C-${id}-H`, programId: id, kind: "help" });
+  db.syncHelper({ programId: id, userId: "U-owner", role: "owner" });
+}
+
+test("archive, pause and deploy need a program owner or admin, not just the internal token", () => {
+  activeProgram("life-authz");
+  for (const to of ["paused", "archived"]) {
+    const refused = lifecycle.transition("life-authz", to, null);
+    assert.equal(refused.ok, false, to);
+    assert.match(refused.blockers.join(" "), /requires a program owner or admin/);
+    assert.equal(lifecycle.transition("life-authz", to, "U-stranger").ok, false, to);
+  }
+  assert.equal(lifecycle.current("life-authz"), "active");
+  assert.equal(db.listProgramChannels("life-authz").length, 1);
+});
+
+test("archiving clears the program's channel fields so nothing routes to it", () => {
+  activeProgram("life-routes");
+  assert.equal(lifecycle.transition("life-routes", "archived", "U-owner").ok, true);
+  assert.equal(programs.forChannel("C-life-routes-H", "TW-LIFE"), null);
+  const stored = programs.get("life-routes");
+  assert.equal(stored.helpChannel, null);
+  assert.deepEqual(stored.channels, []);
+});
+
+test("a program with tickets off can go live without an organizer channel", () => {
+  programs.saveProgram({ id: "life-quiet", name: "Quiet", lifecycle: "approved", ticketsEnabled: false, helpChannel: "C-quiet-H", channels: ["C-quiet-H"] });
+  db.claimProgramChannel({ workspaceId: "TW-LIFE", channelId: "C-quiet-H", programId: "life-quiet", kind: "help" });
+  db.syncHelper({ programId: "life-quiet", userId: "U-owner", role: "owner" });
+  assert.equal(lifecycle.transition("life-quiet", "active", "U-owner").ok, true);
+});
+
+test("a ticketing program still needs an organizer channel", () => {
+  programs.saveProgram({ id: "life-tix", name: "Tix", lifecycle: "approved", ticketsEnabled: true, helpChannel: "C-tix-H", channels: ["C-tix-H"] });
+  db.claimProgramChannel({ workspaceId: "TW-LIFE", channelId: "C-tix-H", programId: "life-tix", kind: "help" });
+  db.syncHelper({ programId: "life-tix", userId: "U-owner", role: "owner" });
+  const result = lifecycle.transition("life-tix", "active", "U-owner");
+  assert.equal(result.ok, false);
+  assert.match(result.blockers.join(" "), /organizer channel/);
+});

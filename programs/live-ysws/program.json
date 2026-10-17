@@ -1,0 +1,59 @@
+{
+  "id": "live-ysws",
+  "name": "Live YSWS",
+  "description": "Live YSWS was a Hack Club program built around a livestream timer: each approved hour extends seba's (plastuchino) stream by 10 minutes and earns tokens spendable in the shop. Submissions are now closed and the stream is over; participants can still check their submissions and spend tokens in the shop.",
+  "supportName": "Live YSWS Help",
+  "posture": "active",
+  "channels": {
+    "help": "C0C1D3RM0UC",
+    "organizer": "C0C14QX86PP",
+    "main": []
+  },
+  "sources": [
+    {
+      "name": "Live YSWS Official Site",
+      "type": "url",
+      "url": "https://live.hackclub.com/"
+    },
+    {
+      "name": "Live YSWS Official Repository",
+      "type": "github-repo",
+      "url": "https://github.com/hackclub/live"
+    }
+  ],
+  "instructions": {
+    "mayAnswer": [
+      "What Live YSWS was, who ran it, and that it is now over",
+      "The 10 minutes per approved hour stream mechanic",
+      "Software vs hardware submission requirements and form fields",
+      "Age (13-18), identity verification, Hackatime and Lapse tracking basics",
+      "Review status meanings and that approved hours feed the timer and tokens",
+      "Token/shop mechanics and the current official shop item list"
+    ],
+    "mustEscalate": [
+      "Any account-specific state: token balance disputes, redemptions, prize fulfillment, orders or tracking",
+      "Why a specific submission was approved, rejected, deflated, or a user was banned",
+      "Identity/address data that blocks submission or rewards",
+      "Requests for exceptions (late submissions, age edge cases, unlisted project types)",
+      "Anything not covered by the official docs in this program folder"
+    ],
+    "neverDo": [
+      "Never say submissions or resubmissions are open; they closed on 2026-10-06",
+      "Never assert a deadline, review ETA, shop price, or fulfillment detail not present in these docs",
+      "Never use another YSWS program's rules to answer a Live question",
+      "Never give an AI-usage policy or percentage; none is published",
+      "Never promise reimbursement, customs coverage, or shipment specifics",
+      "Never discuss Live support matters in public channels; only the configured help and ticket channels are in scope"
+    ]
+  },
+  "links": {},
+  "settings": {
+    "ticketsEnabled": true,
+    "autoEscalate": true,
+    "aiAnswers": true,
+    "incidentMode": "ANSWER_AND_TRACK",
+    "publicTicketsEnabled": true,
+    "supportActive": true,
+    "autoAssign": false
+  }
+}
