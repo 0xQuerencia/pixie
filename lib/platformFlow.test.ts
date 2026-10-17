@@ -15,6 +15,7 @@ const knowledge = require("./knowledge");
 const lookup = require("./lookup");
 const respond = require("./respond");
 const api = require("./web/api");
+const lifecycle = require("./lifecycle");
 
 before(() => {
   db.close();
@@ -33,23 +34,35 @@ test("hosted loop end to end for Highway and Acme", async () => {
     supportName: "Highway Help",
     helpChannel: "C-E2E-HWY",
     channels: ["C-E2E-HWY"],
+    organizerChannel: "C-E2E-HWY-ORG",
     sources: [{ name: "E2E Highway Docs", type: "text", content: "Highway ships October 31." }],
     claimedBy: "U-org",
-    programChannels: [{ id: "C-E2E-HWY", kind: "help" }],
+    programChannels: [
+      { id: "C-E2E-HWY", kind: "help" },
+      { id: "C-E2E-HWY-ORG", kind: "organizer" },
+    ],
   });
   assert.equal(hwy.ok, true);
   assert.equal(db.isHelper("e2e-hwy", "U-org"), true, "creator bootstrapped as organizer");
+  db.handle().query("UPDATE programs SET lifecycle = 'approved' WHERE id = ?").run("e2e-hwy");
+  assert.equal(lifecycle.transition("e2e-hwy", "active", "U-org").ok, true);
 
   const pxl = api.internalProgramSync("e2e-acme", {
     name: "Acme",
     workspaceId: "TE2E",
     helpChannel: "C-E2E-PXL",
     channels: ["C-E2E-PXL"],
+    organizerChannel: "C-E2E-PXL-ORG",
     sources: [{ name: "E2E Acme Docs", type: "text", content: "Acme ships August 18." }],
     claimedBy: "U-org2",
-    programChannels: [{ id: "C-E2E-PXL", kind: "help" }],
+    programChannels: [
+      { id: "C-E2E-PXL", kind: "help" },
+      { id: "C-E2E-PXL-ORG", kind: "organizer" },
+    ],
   });
   assert.equal(pxl.ok, true);
+  db.handle().query("UPDATE programs SET lifecycle = 'approved' WHERE id = ?").run("e2e-acme");
+  assert.equal(lifecycle.transition("e2e-acme", "active", "U-org2").ok, true);
 
   assert.equal(programs.forChannel("C-E2E-HWY", "TE2E").id, "e2e-hwy");
   assert.equal(programs.forChannel("C-E2E-PXL", "TE2E").id, "e2e-acme");

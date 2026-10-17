@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const db = require("./db");
 const programs = require("./programs");
 const docs = require("./programDocs");
+const knowledge = require("./knowledge");
 
 before(() => {
   db.close();
@@ -87,4 +88,34 @@ test("contentHash includes active official docs and source state", () => {
     updatedBy: "helper",
   });
   assert.equal(docs.contentHash("docs-hash"), second);
+});
+
+test("official seeded docs participate in scoped retrieval without leaking across programs", () => {
+  programs.saveProgram({ id: "docs-retrieve-a", name: "Docs Retrieve A", sharedSources: false, lifecycle: "active" });
+  programs.saveProgram({ id: "docs-retrieve-b", name: "Docs Retrieve B", sharedSources: false, lifecycle: "active" });
+  docs.createDoc("docs-retrieve-a", {
+    section: "faq",
+    title: "A seeded policy",
+    body: "Program A permits a blue pineapple sticker for completed projects.",
+    trust: "official",
+    origin: "manual",
+    updatedBy: "seed",
+  });
+  docs.createDoc("docs-retrieve-b", {
+    section: "faq",
+    title: "B seeded policy",
+    body: "Program B permits a green mango sticker for completed projects.",
+    trust: "official",
+    origin: "manual",
+    updatedBy: "seed",
+  });
+  programs.invalidate();
+  knowledge.invalidate();
+
+  const aContext = knowledge.getContext("what sticker does the program permit", "docs-retrieve-a");
+  const bContext = knowledge.getContext("what sticker does the program permit", "docs-retrieve-b");
+  assert.match(aContext, /blue pineapple sticker/);
+  assert.doesNotMatch(aContext, /green mango sticker/);
+  assert.match(bContext, /green mango sticker/);
+  assert.doesNotMatch(bContext, /blue pineapple sticker/);
 });

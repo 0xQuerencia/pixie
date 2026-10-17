@@ -1,32 +1,35 @@
 import programs = require("./programs");
 import programModel = require("./programModel");
+import configModule = require("./config");
 import type { Program } from "./types";
+
+const { config } = configModule;
 
 function isMainChannel(program: Program | null, channelId: string | null, workspaceId: string | null) {
   if (!program || !channelId) return false;
   if (program.helpChannel === channelId) return false;
   const claim = require("./db").getChannelOwner(workspaceId || program.workspaceId || "default", channelId);
-  return Boolean(claim && claim.program_id === program.id && claim.kind !== "help" && claim.kind !== "organizer");
+  if (claim) return claim.program_id === program.id && claim.kind !== "help" && claim.kind !== "organizer";
+  if (workspaceId && program.workspaceId && program.workspaceId !== workspaceId) return false;
+  return Boolean(
+    program.channels?.includes(channelId) || (!workspaceId && config.slack.faqChannels.includes(channelId)),
+  );
 }
 
 function isHelpChannel(program: Program | null, channelId: string | null, workspaceId: string | null) {
   if (!program || !channelId) return false;
-  try {
-    const claim = require("./db").getChannelOwner(workspaceId || "default", channelId);
-    return Boolean(claim && claim.program_id === program.id && claim.kind === "help");
-  } catch (_: unknown) {
-    return false;
-  }
+  const claim = require("./db").getChannelOwner(workspaceId || program.workspaceId || "default", channelId);
+  if (claim) return claim.program_id === program.id && claim.kind === "help";
+  if (workspaceId && program.workspaceId && program.workspaceId !== workspaceId) return false;
+  return program.helpChannel === channelId || (!workspaceId && config.slack.helpChannel === channelId);
 }
 
 function isOrganizerChannel(program: Program | null, channelId: string | null, workspaceId: string | null) {
   if (!program || !channelId) return false;
-  try {
-    const claim = require("./db").getChannelOwner(workspaceId || "default", channelId);
-    return Boolean(claim && claim.program_id === program.id && claim.kind === "organizer");
-  } catch (_: unknown) {
-    return false;
-  }
+  const claim = require("./db").getChannelOwner(workspaceId || program.workspaceId || "default", channelId);
+  if (claim) return claim.program_id === program.id && claim.kind === "organizer";
+  if (workspaceId && program.workspaceId && program.workspaceId !== workspaceId) return false;
+  return program.organizerChannel === channelId;
 }
 
 function organizerSettings(main: Record<string, unknown>) {
@@ -73,8 +76,8 @@ function validate() {
   }
   return programModel.validateChannelRoles({
     programs: programs.all(),
-    legacyHelp: null,
-    legacyMain: [],
+    legacyHelp: config.slack.helpChannel || null,
+    legacyMain: config.slack.faqChannels || [],
     claims,
   });
 }

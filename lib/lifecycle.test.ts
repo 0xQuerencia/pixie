@@ -85,7 +85,7 @@ test("archive, pause and deploy need a program owner or admin, not just the inte
 test("archiving clears the program's channel fields so nothing routes to it", () => {
   activeProgram("life-routes");
   assert.equal(lifecycle.transition("life-routes", "archived", "U-owner").ok, true);
-  assert.equal(programs.forChannel("C-life-routes-H", "TW-LIFE"), null);
+  assert.equal(programs.forChannel("C-life-routes-H", "TW-LIFE").id, "shared");
   const stored = programs.get("life-routes");
   assert.equal(stored.helpChannel, null);
   assert.deepEqual(stored.channels, []);

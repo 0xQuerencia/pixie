@@ -1435,7 +1435,7 @@ function saveProgram(p: PersistedProgram) {
       ? "active"
       : p.status === "paused"
         ? "paused"
-        : "draft";
+        : "active";
   const learning = p.learning === "review" ? "review" : "auto";
   const sensitive = p.sensitiveCategories ? JSON.stringify(p.sensitiveCategories) : null;
   const VALID_INCIDENT_MODES = ["ANSWER_ONLY", "ANSWER_AND_TRACK", "NORMAL_TICKET"];

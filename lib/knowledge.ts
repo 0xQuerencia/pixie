@@ -15,6 +15,7 @@ const identity = require("./identity");
 const programModule = require("./program");
 const draftSandbox = require("./draftSandbox");
 const learn = require("./learn");
+const programDocs = require("./programDocs");
 import type { Program, ProgramSource } from "./types";
 
 interface SourceRecord extends Partial<ProgramSource> {
@@ -851,6 +852,12 @@ function sourceSections(programId: string | null = null): Section[] {
     seen.add(src.name);
     const text = memText(src);
     if (text) result.push([src.name, text]);
+  }
+
+  if (programId) {
+    for (const doc of programDocs.docSections(programId)) {
+      if (doc.name && doc.text) result.push([doc.name, doc.text]);
+    }
   }
 
   return result;

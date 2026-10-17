@@ -25,7 +25,11 @@ test("inspect returns scoped provenance and does not write cache or metrics", as
     updatedBy: "owner",
   });
   const original = lookup.lookupAnswer;
-  lookup.lookupAnswer = async () => ({ source: "Submission FAQ", answer: "Submit projects before the deadline." });
+  lookup.lookupAnswer = async () => ({
+    source: "Submission FAQ",
+    answer: "Submit projects before the deadline.",
+    verification: { sendable: true },
+  });
   const beforeMetrics = db.handle().query("SELECT COUNT(*) AS n FROM metrics").get().n;
   const beforeCache = db.handle().query("SELECT COUNT(*) AS n FROM answer_cache").get().n;
   try {

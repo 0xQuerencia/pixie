@@ -334,7 +334,6 @@ test("a substantive help-channel root routes through respond and owns ticket cre
     ts: "support-root-1",
     channel: HELP_CHANNEL,
     user: "U-SUPPORT",
-    team: "T-SUPPORT",
     text: "how do I submit my project?",
   };
   try {
@@ -346,7 +345,7 @@ test("a substantive help-channel root routes through respond and owns ticket cre
   }
   assert.equal(calls.length, 1);
   assert.equal(calls[0].mode, respond.HELP_ONLY);
-  assert.equal(db.getTicketByThreadTs(event.ts, event.team), null, "stubbed respond owns the ticket in production");
+  assert.equal(db.getTicketByThreadTs(event.ts, null), null, "stubbed respond owns the ticket in production");
 });
 
 test("isolated app_mention ignores bot and self events", async () => {
