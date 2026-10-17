@@ -361,7 +361,9 @@ function ensureProgramScopedUserTopics(database: DatabaseType) {
     const columns = database.query<{ name: string; pk: number }, []>("PRAGMA table_info(user_topics)").all();
     const programColumn = columns.find((column) => column.name === "program_id");
     if (!programColumn || programColumn.pk !== 0) return;
-    database.query("UPDATE user_topics SET program_id = '__legacy__' WHERE program_id IS NULL OR program_id = ''").run();
+    database
+      .query("UPDATE user_topics SET program_id = '__legacy__' WHERE program_id IS NULL OR program_id = ''")
+      .run();
     database.exec(`
       CREATE TABLE user_topics_scoped (
         user_id     TEXT NOT NULL,

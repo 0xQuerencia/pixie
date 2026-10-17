@@ -258,7 +258,11 @@ CREATE INDEX IF NOT EXISTS idx_answer_traces_thread
 const MIGRATIONS = [
   ["doc_gaps", "message_ts", "ALTER TABLE doc_gaps ADD COLUMN message_ts TEXT"],
 
-  ["answered_messages", "workspace_id", "ALTER TABLE answered_messages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
+  [
+    "answered_messages",
+    "workspace_id",
+    "ALTER TABLE answered_messages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
+  ],
   ["answered_messages", "channel", "ALTER TABLE answered_messages ADD COLUMN channel TEXT NOT NULL DEFAULT ''"],
 
   ["support_memory", "normalized_value", "ALTER TABLE support_memory ADD COLUMN normalized_value TEXT"],
@@ -422,8 +426,16 @@ const MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS thread_takeover (workspace_id TEXT NOT NULL DEFAULT 'default', thread_ts TEXT PRIMARY KEY, channel TEXT, by_user TEXT, created_at INTEGER NOT NULL)",
   ],
   ["threads", "workspace_id", "ALTER TABLE threads ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
-  ["muted_threads", "workspace_id", "ALTER TABLE muted_threads ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
-  ["thread_takeover", "workspace_id", "ALTER TABLE thread_takeover ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
+  [
+    "muted_threads",
+    "workspace_id",
+    "ALTER TABLE muted_threads ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
+  ],
+  [
+    "thread_takeover",
+    "workspace_id",
+    "ALTER TABLE thread_takeover ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
+  ],
   [
     "sla_notifications",
     "table",
