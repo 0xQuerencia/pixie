@@ -119,7 +119,7 @@ function selector(db: DatabaseLike, table: ScopedTable, programId: string): { wh
       params: [programId, programId, programId],
     };
   }
-  if (CHANNEL_STATE_TABLES.includes(table.name) && !table.columns.has("program_id")) {
+  if (CHANNEL_STATE_TABLES.includes(table.name) && !table.columns.has("program_id") && table.columns.has("channel")) {
     const channels = programChannels(db, programId);
     if (channels.length === 0) return { where: "1 = 0", params: [] };
     return { where: `channel IN (${channels.map(() => "?").join(",")})`, params: channels };
@@ -134,6 +134,7 @@ function selector(db: DatabaseLike, table: ScopedTable, programId: string): { wh
     clauses.push("draft_program_id = ?");
     params.push(programId);
   }
+  if (clauses.length === 0) return { where: "1 = 0", params: [] };
   return { where: clauses.map((clause) => `(${clause})`).join(" OR "), params };
 }
 

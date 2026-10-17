@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS schema_data_migrations (
 
 CREATE TABLE IF NOT EXISTS answer_cache (
   question_hash TEXT PRIMARY KEY,
+  program_id    TEXT,
   question      TEXT NOT NULL,
   source        TEXT,
   answer        TEXT NOT NULL,
@@ -133,6 +134,7 @@ CREATE TABLE IF NOT EXISTS active_guides (
 );
 
 CREATE TABLE IF NOT EXISTS muted_threads (
+  workspace_id TEXT NOT NULL DEFAULT 'default',
   thread_ts    TEXT PRIMARY KEY,
   channel      TEXT,
   muted_at     INTEGER NOT NULL
@@ -256,10 +258,14 @@ CREATE INDEX IF NOT EXISTS idx_answer_traces_thread
 const MIGRATIONS = [
   ["doc_gaps", "message_ts", "ALTER TABLE doc_gaps ADD COLUMN message_ts TEXT"],
 
+  ["answered_messages", "workspace_id", "ALTER TABLE answered_messages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
+  ["answered_messages", "channel", "ALTER TABLE answered_messages ADD COLUMN channel TEXT NOT NULL DEFAULT ''"],
+
   ["support_memory", "normalized_value", "ALTER TABLE support_memory ADD COLUMN normalized_value TEXT"],
   ["support_memory", "updated_at", "ALTER TABLE support_memory ADD COLUMN updated_at INTEGER"],
 
   ["answer_cache", "ask_count", "ALTER TABLE answer_cache ADD COLUMN ask_count INTEGER NOT NULL DEFAULT 1"],
+  ["answer_cache", "program_id", "ALTER TABLE answer_cache ADD COLUMN program_id TEXT"],
   ["answer_cache", "last_asked_at", "ALTER TABLE answer_cache ADD COLUMN last_asked_at INTEGER"],
   ["answer_cache", "refreshed_at", "ALTER TABLE answer_cache ADD COLUMN refreshed_at INTEGER"],
 
@@ -413,8 +419,11 @@ const MIGRATIONS = [
   [
     "thread_takeover",
     "table",
-    "CREATE TABLE IF NOT EXISTS thread_takeover (thread_ts TEXT PRIMARY KEY, channel TEXT, by_user TEXT, created_at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS thread_takeover (workspace_id TEXT NOT NULL DEFAULT 'default', thread_ts TEXT PRIMARY KEY, channel TEXT, by_user TEXT, created_at INTEGER NOT NULL)",
   ],
+  ["threads", "workspace_id", "ALTER TABLE threads ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
+  ["muted_threads", "workspace_id", "ALTER TABLE muted_threads ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
+  ["thread_takeover", "workspace_id", "ALTER TABLE thread_takeover ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
   [
     "sla_notifications",
     "table",
