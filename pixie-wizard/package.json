@@ -8,7 +8,9 @@
     "start": "next start -p 4901",
     "typecheck": "tsc --noEmit",
     "test": "bun ../scripts/run-tests.mjs --wizard",
-    "migrate": "node scripts/migrate.mjs"
+    "migrate": "node scripts/migrate.mjs",
+    "archive:programs": "bun scripts/program-reset-wizard.mjs --archive-only",
+    "reset:programs": "bun scripts/program-reset-wizard.mjs"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
