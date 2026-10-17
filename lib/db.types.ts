@@ -16,6 +16,7 @@ export interface ProgramRow {
   workspace_id: string | null;
   behavior: string | null;
   status: string | null;
+  lifecycle: string;
   [key: string]: unknown;
 }
 

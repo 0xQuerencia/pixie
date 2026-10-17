@@ -108,6 +108,7 @@ interface ProgramDbRow extends SqlRow {
   ticket_visibility: string | null;
   behavior: string | null;
   status: string | null;
+  lifecycle: string | null;
   learning: string | null;
   updated_at: number;
 }
@@ -1389,6 +1390,13 @@ function getDbPrograms() {
     ticketVisibility: r.ticket_visibility || null,
     behavior: r.behavior ? safeJson(r.behavior) : null,
     status: r.status || null,
+    lifecycle: ["draft", "testing", "approved", "active", "paused", "archived"].includes(r.lifecycle || "")
+      ? r.lifecycle
+      : r.status === "live"
+        ? "active"
+        : r.status === "paused"
+          ? "paused"
+          : "draft",
     learning: r.learning === "review" ? "review" : "auto",
     updatedAt: r.updated_at,
   }));
@@ -1411,6 +1419,13 @@ function saveProgram(p: PersistedProgram) {
         ? p.behavior
         : null;
   const status = p.status && ["sandbox", "live", "paused"].includes(p.status) ? p.status : null;
+  const lifecycle = ["draft", "testing", "approved", "active", "paused", "archived"].includes(p.lifecycle || "")
+    ? p.lifecycle
+    : p.status === "live"
+      ? "active"
+      : p.status === "paused"
+        ? "paused"
+        : "draft";
   const learning = p.learning === "review" ? "review" : "auto";
   const sensitive = p.sensitiveCategories ? JSON.stringify(p.sensitiveCategories) : null;
   const VALID_INCIDENT_MODES = ["ANSWER_ONLY", "ANSWER_AND_TRACK", "NORMAL_TICKET"];
@@ -1456,6 +1471,7 @@ function saveProgram(p: PersistedProgram) {
     ticketVisibility,
     behavior,
     status,
+    lifecycle,
     learning,
     nowTs,
   ];
@@ -1469,7 +1485,7 @@ function saveProgram(p: PersistedProgram) {
          sla_unassigned_ms = ?, sla_assigned_ms = ?, sla_waiting_ms = ?, sla_target_ms = ?, sla_notify_channel = ?,
          retention_context_days = ?, retention_tickets_days = ?, retention_notes_days = ?, retention_traces_days = ?, retention_analytics_days = ?, retention_audit_days = ?,
          help_channel = ?, channels = ?, helper_group = ?,
-         sources = ?, milestones = ?, guides = ?, links = ?, categories = ?, ticket_visibility = ?, behavior = ?, status = ?, learning = ?, updated_at = ? WHERE id = ?`,
+         sources = ?, milestones = ?, guides = ?, links = ?, categories = ?, ticket_visibility = ?, behavior = ?, status = ?, lifecycle = ?, learning = ?, updated_at = ? WHERE id = ?`,
     ).run(...values, p.id);
   } else {
     query(
@@ -1477,8 +1493,8 @@ function saveProgram(p: PersistedProgram) {
          ai_answers, tickets_enabled, auto_escalate, sensitive_categories, support_active, auto_assign, helper_ping_enabled, shadow_mode, incident_mode, public_tickets_enabled,
          sla_unassigned_ms, sla_assigned_ms, sla_waiting_ms, sla_target_ms, sla_notify_channel,
          retention_context_days, retention_tickets_days, retention_notes_days, retention_traces_days, retention_analytics_days, retention_audit_days,
-         help_channel, channels, helper_group, sources, milestones, guides, links, categories, ticket_visibility, behavior, status, learning, updated_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         help_channel, channels, helper_group, sources, milestones, guides, links, categories, ticket_visibility, behavior, status, lifecycle, learning, updated_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(p.id, ...values, nowTs);
   }
 }
