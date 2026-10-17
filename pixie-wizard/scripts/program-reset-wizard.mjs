@@ -80,12 +80,7 @@ async function snapshot(client, programId, createdAt, available = new Set(RESET_
       table === "hosted_programs"
         ? "select * from hosted_programs where id = $1"
         : `select * from ${table} where program_id = $1`;
-    try {
-      tables[table] = (await client.query(query, [programId])).rows;
-    } catch (error) {
-      if (error?.code === "42P01") tables[table] = [];
-      else throw error;
-    }
+    tables[table] = (await client.query(query, [programId])).rows;
   }
   const payload = { version: 1, programId, createdAt, hostname: os.hostname(), tables };
   const checksum = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
@@ -110,12 +105,7 @@ async function counts(client, programId, available = new Set(RESET_TABLES)) {
       table === "hosted_programs"
         ? "select count(*)::int as count from hosted_programs where id = $1"
         : `select count(*)::int as count from ${table} where program_id = $1`;
-    try {
-      tables[table] = (await client.query(query, [programId])).rows[0]?.count || 0;
-    } catch (error) {
-      if (error?.code === "42P01") tables[table] = 0;
-      else throw error;
-    }
+    tables[table] = (await client.query(query, [programId])).rows[0]?.count || 0;
   }
   return tables;
 }
