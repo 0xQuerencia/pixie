@@ -256,6 +256,44 @@ function migrate(database: DatabaseType) {
   }
 }
 
+function migrateScopedState(database: DatabaseType) {
+  const needsRebuild = (table: string, column: string) => {
+    const exists = database.query("SELECT name FROM sqlite_master WHERE type = ? AND name = ?").get("table", table);
+    if (!exists) return false;
+    const columns = database.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+    return !columns.some((entry: { name: string }) => entry.name === column);
+  };
+  const rebuilds: Record<string, string> = {
+    answered_messages: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', ts TEXT NOT NULL, answered_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, ts))`,
+    threads: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, seeded INTEGER NOT NULL DEFAULT 0, pixie_spoke INTEGER NOT NULL DEFAULT 0, helper_pinged INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    muted_threads: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, muted_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    thread_takeover: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, by_user TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    active_guides: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, guide_id TEXT NOT NULL, current_step INTEGER NOT NULL DEFAULT 0, user_id TEXT, started_at INTEGER NOT NULL, message_ts TEXT, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    user_topics: `(user_id TEXT NOT NULL, program_id TEXT NOT NULL DEFAULT '__legacy__', topic TEXT NOT NULL, was_helpful INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, PRIMARY KEY (user_id, program_id, topic))`,
+  };
+  for (const [table, definition] of Object.entries(rebuilds)) {
+    if (!needsRebuild(table, table === "user_topics" ? "program_id" : "workspace_id")) continue;
+    const staging = `${table}__rebuild`;
+    const oldColumns = database.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((entry) => entry.name);
+    database.exec("BEGIN");
+    try {
+      database.exec(`DROP TABLE IF EXISTS ${staging}; CREATE TABLE ${staging} ${definition}`);
+      const kept = database
+        .query<{ name: string }, []>(`PRAGMA table_info(${staging})`)
+        .all()
+        .map((entry) => entry.name)
+        .filter((name) => oldColumns.includes(name));
+      const list = kept.join(", ");
+      database.exec(`INSERT OR IGNORE INTO ${staging} (${list}) SELECT ${list} FROM ${table}`);
+      database.exec(`DROP TABLE ${table}; ALTER TABLE ${staging} RENAME TO ${table}`);
+      database.exec("COMMIT");
+    } catch (error: unknown) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    log.info("db", `rebuilt scoped state table with data kept: ${table}`);
+  }
+}
 function backfillResolvedCredits(database: DatabaseType) {
   const version = "resolved_credit_v1";
   if (database.query("SELECT 1 FROM ticket_metrics_migrations WHERE version = ?").get(version)) return;

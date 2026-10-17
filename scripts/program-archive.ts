@@ -38,25 +38,16 @@ function parseArgs(argv: string[]) {
   return options;
 }
 
-function tableRows(source: ReturnType<typeof Database>, name: string, programIds: string[]) {
-  const columns = source
-    .query(`PRAGMA table_info(${quote(name)})`)
-    .all()
-    .map((value: unknown) => String(row(value).name || ""));
-  const scoped = columns.includes("program_id") || columns.includes("draft_program_id");
-  if (name === "programs" || name === "answer_cache" || name === "source_cache" || scoped) {
-    return source.query(`SELECT * FROM ${quote(name)}`).all();
-  }
-  if (name === "job_leases" && programIds.length > 0) {
-    return source
-      .query(`SELECT * FROM ${quote(name)} WHERE ${programIds.map(() => "instr(name, ?) > 0").join(" OR ")}`)
-      .all(...programIds);
-  }
+const FULL_COPY_TABLES = ["answer_cache", "source_cache"];
+
+function tableRows(source: ReturnType<typeof Database>, name: string, programIds: string[], targets: Set<string>) {
+  if (targets.has(name)) return purge.scopedRows(source, name, programIds);
+  if (FULL_COPY_TABLES.includes(name)) return source.query(`SELECT * FROM ${quote(name)}`).all();
   return [];
 }
 
-function shouldArchiveTable(name: string, scopedNames: Set<string>) {
-  return scopedNames.has(name) || ["programs", "answer_cache", "source_cache", "job_leases"].includes(name);
+function shouldArchiveTable(name: string, targets: Set<string>) {
+  return targets.has(name) || FULL_COPY_TABLES.includes(name);
 }
 
 function schema(source: ReturnType<typeof Database>) {
@@ -220,8 +211,9 @@ function main() {
   fs.mkdirSync(bundleDir, { recursive: false });
   const source = new Database(sourcePath, { readonly: true, create: false });
   source.exec("PRAGMA query_only = ON");
+  source.exec("BEGIN");
   const scopedTables = purge.discoverProgramScopedTables(source);
-  const scopedNames = new Set(scopedTables.map((table: { name: string }) => table.name));
+  const targets = new Set<string>(purge.targetTables(source));
   const ids = programIds(source, scopedTables);
   const archive = new Database(dbPath, { create: true });
   archive.exec("PRAGMA foreign_keys = OFF");
@@ -231,10 +223,12 @@ function main() {
   const archivedTables: string[] = [];
   for (const object of objects.filter((item: Row) => item.type === "table")) {
     const name = String(object.name);
-    if (!shouldArchiveTable(name, scopedNames)) continue;
+    if (!shouldArchiveTable(name, targets)) continue;
     archivedTables.push(name);
-    rowCounts[name] = copyRows(source, archive, name, tableRows(source, name, ids));
+    rowCounts[name] = copyRows(source, archive, name, tableRows(source, name, ids, targets));
   }
+  const tableDigests = purge.digest(source, ids);
+  source.exec("COMMIT");
   for (const object of objects.filter((item: Row) => item.type !== "table")) archive.exec(String(object.sql));
   archive.close();
   source.close();
@@ -249,12 +243,13 @@ function main() {
   }
   const hash = crypto.createHash("sha256").update(fs.readFileSync(dbPath)).digest("hex");
   const manifest = {
-    version: 1,
+    version: 2,
     sourceDbPath: sourcePath,
     archiveDbPath: path.resolve(dbPath),
     sha256: hash,
     dbSha256: hash,
     rowCounts,
+    tableDigests,
     archivedTables,
     programIds: ids,
     gitCommit: gitCommit(),

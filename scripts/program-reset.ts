@@ -14,9 +14,6 @@ function row(value: unknown): Row {
   return value && typeof value === "object" ? (value as Row) : {};
 }
 
-function quote(name: string) {
-  return `"${name.replaceAll('"', '""')}"`;
-}
 
 function parseArgs(argv: string[]) {
   const options = {
@@ -27,6 +24,7 @@ function parseArgs(argv: string[]) {
     archive: "",
     confirm: "",
     allowProduction: false,
+    ignoreRunning: false,
     phrase: "",
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -38,6 +36,7 @@ function parseArgs(argv: string[]) {
     else if (arg === "--archive") options.archive = argv[++index] || "";
     else if (arg === "--confirm") options.confirm = argv[++index] || "";
     else if (arg === "--allow-production") options.allowProduction = true;
+    else if (arg === "--ignore-running") options.ignoreRunning = true;
     else if (arg === "--phrase") options.phrase = argv[++index] || "";
     else if (!arg.startsWith("-")) options.programId ||= arg;
     else if (arg === "--help" || arg === "-h") {
@@ -52,16 +51,15 @@ function parseArgs(argv: string[]) {
   return options;
 }
 
-function fingerprint(dbPath: string) {
+function fingerprint(dbPath: string, digests: unknown) {
   return crypto
     .createHash("sha256")
-    .update(`${path.resolve(dbPath)}${os.hostname()}`)
+    .update(`${path.resolve(dbPath)}\n${os.hostname()}\n${JSON.stringify(digests)}`)
     .digest("hex")
     .slice(0, 8);
 }
 
-function guard(options: ReturnType<typeof parseArgs>, dbPath: string) {
-  const expected = fingerprint(dbPath);
+function guard(options: ReturnType<typeof parseArgs>, expected: string) {
   if (options.confirm !== expected) throw new Error(`confirmation fingerprint mismatch; expected ${expected}`);
   const production = Boolean(process.env.RAILWAY_ENVIRONMENT) || process.env.NODE_ENV === "production";
   if (production && (!options.allowProduction || options.phrase !== `RESET-${expected}`)) {
@@ -79,46 +77,29 @@ function manifestPath(archivePath: string) {
   return candidates.find((candidate) => fs.existsSync(candidate)) || "";
 }
 
-function tableCount(db: ReturnType<typeof Database>, table: string, manifest: Row): number {
-  const ids = Array.isArray(manifest.programIds)
-    ? manifest.programIds.filter((id): id is string => typeof id === "string")
-    : [];
-  let where = "1 = 1";
-  let params: (string | number | boolean | null | Uint8Array)[] = [];
-  if (table === "job_leases") {
-    where = ids.length ? ids.map(() => "instr(name, ?) > 0").join(" OR ") : "1 = 0";
-    params = ids;
-  }
-  const count = row(db.query(`SELECT COUNT(*) AS count FROM ${quote(table)} WHERE ${where}`).get(...params)).count;
-  return Number(count || 0);
+function sameDigests(a: unknown, b: unknown) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function verifyArchive(dbPath: string, archivePath: string) {
+function verifyArchive(live: ReturnType<typeof Database>, archivePath: string, ids: string[], liveDigests: unknown) {
   const manifestFile = manifestPath(archivePath);
   if (!manifestFile) throw new Error("archive manifest.json not found beside archive database");
   const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as Row;
-  const expectedPath = path.resolve(archivePath);
-  if (manifest.archiveDbPath !== expectedPath) throw new Error("archive path does not match manifest");
-  if (manifest.sourceDbPath !== path.resolve(dbPath)) throw new Error("archive source database does not match --db");
+  if (manifest.archiveDbPath !== path.resolve(archivePath)) throw new Error("archive path does not match manifest");
   const expectedHash = String(manifest.sha256 || manifest.dbSha256 || "");
   const actualHash = crypto.createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
   if (!expectedHash || expectedHash !== actualHash) throw new Error("archive sha256 does not match manifest");
   const archive = new Database(archivePath, { readonly: true, create: false });
-  const live = new Database(dbPath, { readonly: true, create: false });
   try {
-    const counts = row(manifest.rowCounts);
-    for (const table of Object.keys(counts)) {
-      const archived = tableCount(archive, table, manifest);
-      const current = tableCount(live, table, manifest);
-      if (archived !== Number(counts[table]) || current !== Number(counts[table])) {
-        throw new Error(
-          `archive row count mismatch for ${table}: archive=${archived}, live=${current}, manifest=${counts[table]}`,
-        );
-      }
+    const archived = purge.digest(archive, ids);
+    if (!sameDigests(archived, liveDigests)) {
+      const drift = Object.keys(liveDigests as Row).filter(
+        (table) => JSON.stringify((archived as Row)[table]) !== JSON.stringify((liveDigests as Row)[table]),
+      );
+      throw new Error(`archive does not match the live data that would be deleted (differs: ${drift.join(", ")})`);
     }
   } finally {
     archive.close();
-    live.close();
   }
 }
 
@@ -131,17 +112,34 @@ function main() {
   const options = parseArgs(process.argv.slice(2));
   const dbPath = path.resolve(options.dbPath);
   if (!fs.existsSync(dbPath)) throw new Error(`database not found: ${dbPath}`);
-  if (options.execute) {
-    if (!options.archive) throw new Error("--execute requires --archive PATH");
-    guard(options, dbPath);
-    verifyArchive(dbPath, path.resolve(options.archive));
-  }
+  if (options.execute && !options.archive) throw new Error("--execute requires --archive PATH");
   const db = options.execute ? new Database(dbPath) : new Database(dbPath, { readonly: true, create: false });
   try {
+    if (options.execute) db.exec("BEGIN IMMEDIATE");
+    const ids: string[] = options.all ? purge.programIds(db) : [options.programId];
+    const digests = purge.digest(db, ids);
+    const expected = fingerprint(dbPath, digests);
+    if (options.execute) {
+      const running = options.ignoreRunning ? [] : purge.runningInstances(db);
+      if (running.length > 0) {
+        throw new Error(`a Pixie instance looks active (unexpired job leases: ${running.join(", ")}); stop it first`);
+      }
+      guard(options, expected);
+      verifyArchive(db, path.resolve(options.archive), ids, digests);
+    }
     const result = options.all
       ? purge.purgeAllPrograms(db, { dryRun: !options.execute })
       : purge.purgeProgram(db, options.programId, { dryRun: !options.execute });
+    if (options.execute) db.exec("COMMIT");
     printSummary(options.execute ? "executed" : "dry-run", options.all ? "all programs" : options.programId, result);
+    if (!options.execute) console.log(`confirm fingerprint (binds this database, host and current data): ${expected}`);
+  } catch (error: unknown) {
+    if (options.execute) {
+      try {
+        db.exec("ROLLBACK");
+      } catch (_) {}
+    }
+    throw error;
   } finally {
     db.close();
   }

@@ -1,6 +1,4 @@
 import crypto = require("node:crypto");
-import fs = require("node:fs");
-import path = require("node:path");
 
 type Binding = string | number | boolean | null | Uint8Array;
 interface Statement {
@@ -20,10 +18,20 @@ interface PurgeResult {
   tables: Record<string, number>;
 }
 type PurgeHook = (programId: string) => void;
+type TableDigest = { count: number; sha256: string };
 
-const APP_ROOT = path.join(__dirname, "..");
 const hooks = new Set<PurgeHook>();
 const AUDIT_TABLE = "audit_events";
+const CHANNEL_STATE_TABLES = [
+  "threads",
+  "answered_messages",
+  "thread_messages",
+  "user_messages",
+  "muted_threads",
+  "thread_takeover",
+  "active_guides",
+  "answered_threads",
+];
 
 function quote(name: string) {
   return `"${name.replaceAll('"', '""')}"`;
@@ -57,51 +65,62 @@ function discoverProgramScopedTables(db: DatabaseLike): ScopedTable[] {
     .filter(({ columns: tableColumns }) => tableColumns.has("program_id") || tableColumns.has("draft_program_id"));
 }
 
-function sourceObjects(programId: string, db: DatabaseLike): Record<string, unknown>[] {
-  const rows: unknown[] = [];
-  const stored = db.query("SELECT sources FROM programs WHERE id = ?").get(programId);
-  const storedSources = objectRow(stored).sources;
-  if (typeof storedSources === "string") {
-    try {
-      rows.push(JSON.parse(storedSources) as unknown);
-    } catch (_) {}
-  } else rows.push(storedSources);
-  for (const filename of ["programs.json", "sources.json"]) {
-    const fullPath = path.join(APP_ROOT, filename);
-    if (!fs.existsSync(fullPath)) continue;
-    try {
-      const value = JSON.parse(fs.readFileSync(fullPath, "utf8")) as unknown;
-      if (filename === "programs.json" && Array.isArray(value)) {
-        const program = value.find((item) => objectRow(item).id === programId);
-        rows.push(program ? objectRow(program).sources : null);
-      } else if (filename === "sources.json" && ["pixl", "ysws-global"].includes(programId)) rows.push(value);
-    } catch (_) {}
+function parseList(value: unknown): string[] {
+  if (typeof value !== "string" || !value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch (_) {
+    return [];
   }
-  const sources: Record<string, unknown>[] = [];
-  for (const value of rows) {
-    if (!Array.isArray(value)) continue;
-    for (const item of value) if (item && typeof item === "object") sources.push(item as Record<string, unknown>);
-  }
-  return sources;
 }
 
-function sourceCacheKeys(db: DatabaseLike, programId: string): string[] {
-  const keys = new Set<string>();
-  for (const source of sourceObjects(programId, db)) {
-    const name = typeof source.name === "string" ? source.name : "";
-    if (!name) continue;
-    keys.add(name);
-    if (typeof source.url === "string" && source.url) keys.add(`${name}::${source.url}`);
-    if (!source.url) {
-      const inline = JSON.stringify({ type: source.type, content: source.content });
-      const digest = crypto.createHash("sha256").update(inline).digest("hex");
-      keys.add(`${name}::inline::${digest}`);
+function programChannels(db: DatabaseLike, programId: string): string[] {
+  const names = new Set(tableNames(db));
+  const found = new Set<string>();
+  if (names.has("program_channels")) {
+    for (const row of db.query("SELECT channel_id FROM program_channels WHERE program_id = ?").all(programId)) {
+      const id = objectRow(row).channel_id;
+      if (typeof id === "string" && id) found.add(id);
     }
   }
-  return [...keys];
+  if (names.has("programs")) {
+    const row = objectRow(db.query("SELECT channels, help_channel FROM programs WHERE id = ?").get(programId));
+    for (const id of [...parseList(row.channels), row.help_channel]) {
+      if (typeof id === "string" && id) found.add(id);
+    }
+  }
+  if (names.has("draft_sandbox_bindings")) {
+    for (const row of db.query("SELECT channel_id FROM draft_sandbox_bindings WHERE program_id = ?").all(programId)) {
+      const id = objectRow(row).channel_id;
+      if (typeof id === "string" && id) found.add(id);
+    }
+  }
+  return [...found].sort();
 }
 
-function sqlFor(table: ScopedTable, programId: string): { where: string; params: Binding[] } {
+function targetsFor(db: DatabaseLike): Map<string, ScopedTable> {
+  const targets = new Map<string, ScopedTable>();
+  const names = new Set(tableNames(db));
+  for (const table of discoverProgramScopedTables(db)) if (table.name !== AUDIT_TABLE) targets.set(table.name, table);
+  if (names.has("programs")) targets.set("programs", { name: "programs", columns: new Set(["id"]) });
+  if (names.has("job_leases")) targets.set("job_leases", { name: "job_leases", columns: new Set(["name"]) });
+  for (const name of CHANNEL_STATE_TABLES) {
+    if (names.has(name)) targets.set(name, { name, columns: columns(db, name) });
+  }
+  return targets;
+}
+
+function selector(db: DatabaseLike, table: ScopedTable, programId: string): { where: string; params: Binding[] } {
+  if (table.name === "programs") return { where: "id = ?", params: [programId] };
+  if (table.name === "job_leases") {
+    return { where: "(name = ? OR substr(name, -length(?) - 1) = ':' || ?)", params: [programId, programId, programId] };
+  }
+  if (CHANNEL_STATE_TABLES.includes(table.name) && !table.columns.has("program_id")) {
+    const channels = programChannels(db, programId);
+    if (channels.length === 0) return { where: "1 = 0", params: [] };
+    return { where: `channel IN (${channels.map(() => "?").join(",")})`, params: channels };
+  }
   const clauses: string[] = [];
   const params: Binding[] = [];
   if (table.columns.has("program_id")) {
@@ -115,42 +134,52 @@ function sqlFor(table: ScopedTable, programId: string): { where: string; params:
   return { where: clauses.map((clause) => `(${clause})`).join(" OR "), params };
 }
 
-function addTarget(targets: Map<string, ScopedTable>, table: ScopedTable) {
-  if (table.name !== AUDIT_TABLE) targets.set(table.name, table);
+function selectorForIds(db: DatabaseLike, table: ScopedTable, programIds: string[]) {
+  const parts = programIds.map((id) => selector(db, table, id)).filter((part) => part.where !== "1 = 0");
+  if (parts.length === 0) return { where: "1 = 0", params: [] as Binding[] };
+  return { where: parts.map((part) => `(${part.where})`).join(" OR "), params: parts.flatMap((part) => part.params) };
 }
 
-function targetsFor(db: DatabaseLike): Map<string, ScopedTable> {
-  const targets = new Map<string, ScopedTable>();
-  for (const table of discoverProgramScopedTables(db)) addTarget(targets, table);
-  const names = new Set(tableNames(db));
-  if (names.has("programs")) targets.set("programs", { name: "programs", columns: new Set(["id"]) });
-  if (names.has("answer_cache")) targets.set("answer_cache", { name: "answer_cache", columns: new Set() });
-  if (names.has("source_cache")) targets.set("source_cache", { name: "source_cache", columns: new Set(["name"]) });
-  if (names.has("job_leases")) targets.set("job_leases", { name: "job_leases", columns: new Set(["name"]) });
-  return targets;
+function countRows(db: DatabaseLike, table: ScopedTable, programId: string): number {
+  const { where, params } = selector(db, table, programId);
+  return Number(objectRow(db.query(`SELECT COUNT(*) AS count FROM ${quote(table.name)} WHERE ${where}`).get(...params)).count || 0);
 }
 
-function selector(
-  db: DatabaseLike,
-  table: ScopedTable,
-  programId: string,
-  ownedSourceKeys: string[] = sourceCacheKeys(db, programId),
-): { where: string; params: Binding[] } {
-  if (table.name === "programs") return { where: "id = ?", params: [programId] };
-  if (table.name === "answer_cache") return { where: "1 = 1", params: [] };
-  if (table.name === "source_cache") {
-    return ownedSourceKeys.length
-      ? { where: `name IN (${ownedSourceKeys.map(() => "?").join(",")})`, params: ownedSourceKeys }
-      : { where: "1 = 0", params: [] };
+function digest(db: DatabaseLike, programIds: string[]): Record<string, TableDigest> {
+  const out: Record<string, TableDigest> = {};
+  for (const [name, table] of [...targetsFor(db)].sort(([a], [b]) => a.localeCompare(b))) {
+    const { where, params } = selectorForIds(db, table, programIds);
+    let rows: unknown[];
+    try {
+      rows = db.query(`SELECT * FROM ${quote(name)} WHERE ${where} ORDER BY rowid`).all(...params);
+    } catch (_) {
+      rows = db.query(`SELECT * FROM ${quote(name)} WHERE ${where} ORDER BY 1`).all(...params);
+    }
+    const hash = crypto.createHash("sha256");
+    for (const row of rows) hash.update(`${JSON.stringify(row)}\n`);
+    out[name] = { count: rows.length, sha256: hash.digest("hex") };
   }
-  if (table.name === "job_leases") return { where: "instr(name, ?) > 0", params: [programId] };
-  return sqlFor(table, programId);
+  return out;
 }
 
-function countRows(db: DatabaseLike, table: ScopedTable, programId: string, ownedSourceKeys: string[]): number {
-  const { where, params } = selector(db, table, programId, ownedSourceKeys);
-  const row = objectRow(db.query(`SELECT COUNT(*) AS count FROM ${quote(table.name)} WHERE ${where}`).get(...params));
-  return Number(row.count || 0);
+function targetTables(db: DatabaseLike): string[] {
+  return [...targetsFor(db).keys()].sort();
+}
+
+function scopedRows(db: DatabaseLike, name: string, programIds: string[]): unknown[] {
+  const table = targetsFor(db).get(name);
+  if (!table) return [];
+  const { where, params } = selectorForIds(db, table, programIds);
+  return db.query(`SELECT * FROM ${quote(name)} WHERE ${where}`).all(...params);
+}
+
+function runningInstances(db: DatabaseLike, at = Date.now()): string[] {
+  if (!tableNames(db).includes("job_leases")) return [];
+  return db
+    .query("SELECT name FROM job_leases WHERE expires_at > ? ORDER BY name")
+    .all(at)
+    .map((row) => String(objectRow(row).name || ""))
+    .filter(Boolean);
 }
 
 function notify(programId: string) {
@@ -158,8 +187,6 @@ function notify(programId: string) {
     () => require("./programs").invalidate(),
     () => require("./knowledge").invalidate(),
     () => require("./draftSandbox").clear(),
-    () => require("./resolutionWatcher").stop(),
-    () => require("./ticketBackfill").stop(),
   ];
   for (const hook of [...builtins, ...hooks]) {
     try {
@@ -176,15 +203,12 @@ function onProgramPurged(hook: PurgeHook): () => void {
 function purgeProgram(db: DatabaseLike, programId: string, { dryRun = false }: { dryRun?: boolean } = {}): PurgeResult {
   if (!programId.trim()) throw new Error("programId is required");
   const targets = targetsFor(db);
-  const ownedSourceKeys = sourceCacheKeys(db, programId);
   const result: PurgeResult = { tables: {} };
-  for (const [name, table] of targets) result.tables[name] = countRows(db, table, programId, ownedSourceKeys);
+  for (const [name, table] of targets) result.tables[name] = countRows(db, table, programId);
   if (dryRun) return result;
+  const plans = [...targets].map(([name, table]) => ({ name, ...selector(db, table, programId) }));
   db.transaction(() => {
-    for (const [name, table] of targets) {
-      const { where, params } = selector(db, table, programId, ownedSourceKeys);
-      db.query(`DELETE FROM ${quote(name)} WHERE ${where}`).run(...params);
-    }
+    for (const { name, where, params } of plans) db.query(`DELETE FROM ${quote(name)} WHERE ${where}`).run(...params);
   })();
   notify(programId);
   return result;
@@ -213,13 +237,25 @@ function programIds(db: DatabaseLike): string[] {
 
 function purgeAllPrograms(db: DatabaseLike, { dryRun = false }: { dryRun?: boolean } = {}) {
   const results: Record<string, PurgeResult> = {};
-  for (const programId of programIds(db)) results[programId] = purgeProgram(db, programId, { dryRun });
+  const ids = programIds(db);
+  for (const programId of ids) results[programId] = purgeProgram(db, programId, { dryRun: true });
+  if (!dryRun) {
+    db.transaction(() => {
+      for (const programId of ids) purgeProgram(db, programId, { dryRun: false });
+      if (tableNames(db).includes("source_cache")) db.query("DELETE FROM source_cache").run();
+    })();
+  }
   return results;
 }
 
 export = {
   discoverProgramScopedTables,
-  sourceCacheKeys,
+  programChannels,
+  programIds,
+  targetTables,
+  scopedRows,
+  digest,
+  runningInstances,
   onProgramPurged,
   purgeProgram,
   purgeAllPrograms,
