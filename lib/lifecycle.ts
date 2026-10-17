@@ -81,11 +81,12 @@ function blockersFor(programId: string, from: Lifecycle, to: Lifecycle, actor: s
     if (!ownerOrAdmin(programId, actor)) blockers.push("testing->approved requires a program owner or admin");
     const run = db
       .handle()
-      .query<{ status: string; content_hash: string }, [string]>(
-        "SELECT status, content_hash FROM program_eval_runs WHERE program_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+      .query<{ status: string; content_hash: string; total: number; failed: number }, [string]>(
+        "SELECT status, content_hash, total, failed FROM program_eval_runs WHERE program_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
       )
       .get(programId);
-    if (!run || run.status !== "passed") blockers.push("latest eval run must be passed");
+    if (!run || run.status !== "passed" || Number(run.total) < 1 || Number(run.failed) !== 0)
+      blockers.push("latest eval run must contain at least one passing case");
     if (!run || run.content_hash !== docs.contentHash(programId)) blockers.push("latest eval run is stale");
   }
   if (from === "approved" && to === "active") {

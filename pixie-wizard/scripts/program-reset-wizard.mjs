@@ -52,16 +52,30 @@ function stamp() {
     .replace(/\.\d{3}Z$/, "Z");
 }
 
-async function snapshot(client, programId, createdAt) {
+const RESET_TABLES = [
+  "hosted_programs",
+  "hosted_program_channels",
+  "hosted_program_helpers",
+  "hosted_entitlements",
+  "wizard_entitlements",
+  "hosted_audit_events",
+];
+
+async function existingTables(client) {
+  const rows = await client.query(
+    "select table_name from information_schema.tables where table_schema = current_schema() and table_name = any($1::text[])",
+    [RESET_TABLES],
+  );
+  return new Set(rows.rows.map((row) => row.table_name));
+}
+
+async function snapshot(client, programId, createdAt, available = new Set(RESET_TABLES)) {
   const tables = {};
-  for (const table of [
-    "hosted_programs",
-    "hosted_program_channels",
-    "hosted_program_helpers",
-    "hosted_entitlements",
-    "wizard_entitlements",
-    "hosted_audit_events",
-  ]) {
+  for (const table of RESET_TABLES) {
+    if (!available.has(table)) {
+      tables[table] = [];
+      continue;
+    }
     const query =
       table === "hosted_programs"
         ? "select * from hosted_programs where id = $1"
@@ -85,15 +99,13 @@ function writeSnapshot(output, programId, snapshotData) {
   return file;
 }
 
-async function counts(client, programId) {
+async function counts(client, programId, available = new Set(RESET_TABLES)) {
   const tables = {};
-  for (const table of [
-    "hosted_programs",
-    "hosted_program_channels",
-    "hosted_program_helpers",
-    "wizard_entitlements",
-    "hosted_audit_events",
-  ]) {
+  for (const table of RESET_TABLES.filter((name) => name !== "hosted_entitlements")) {
+    if (!available.has(table)) {
+      tables[table] = 0;
+      continue;
+    }
     const query =
       table === "hosted_programs"
         ? "select count(*)::int as count from hosted_programs where id = $1"
@@ -120,10 +132,11 @@ async function main() {
     const client = await pool.connect();
     try {
       if (!options.execute) {
-        const summary = await counts(client, options.programId);
+        const available = await existingTables(client);
+        const summary = await counts(client, options.programId, available);
         if (!summary.hosted_programs) throw new Error(`${options.programId} does not exist`);
         if (options.archiveOnly) {
-          const archive = await snapshot(client, options.programId, new Date().toISOString());
+          const archive = await snapshot(client, options.programId, new Date().toISOString(), available);
           const archivePath = writeSnapshot(options.output, options.programId, archive);
           console.log(`wizard program archive written: ${options.programId}`);
           console.log(JSON.stringify({ fingerprint, archivePath, checksum: archive.sha256, counts: summary }, null, 2));
@@ -144,9 +157,10 @@ async function main() {
       if (!guard.ok) throw new Error(guard.error);
       await client.query("begin");
       try {
-        const summary = await counts(client, options.programId);
+        const available = await existingTables(client);
+        const summary = await counts(client, options.programId, available);
         if (!summary.hosted_programs) throw new Error(`${options.programId} does not exist`);
-        const archive = await snapshot(client, options.programId, new Date().toISOString());
+        const archive = await snapshot(client, options.programId, new Date().toISOString(), available);
         const archivePath = writeSnapshot(options.output, options.programId, archive);
         await client.query("delete from hosted_programs where id = $1", [options.programId]);
         await client.query("commit");

@@ -82,6 +82,10 @@ function contentChanged(programId: string, actor: string | null = null) {
   try {
     require("./lifecycle").contentChanged(programId, actor);
   } catch (_) {}
+  try {
+    require("./knowledge").invalidate();
+    require("./cache").clearCache();
+  } catch (_) {}
 }
 
 function row(id: number | string): ProgramDoc | null {

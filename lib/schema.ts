@@ -518,7 +518,7 @@ const MIGRATIONS = [
   [
     "programs",
     "lifecycle",
-    "ALTER TABLE programs ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'draft'; UPDATE programs SET lifecycle = CASE status WHEN 'live' THEN 'active' WHEN 'sandbox' THEN 'draft' WHEN 'paused' THEN 'paused' ELSE lifecycle END WHERE status IS NOT NULL",
+    "ALTER TABLE programs ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'draft'; UPDATE programs SET lifecycle = CASE status WHEN 'live' THEN 'active' WHEN 'sandbox' THEN 'draft' WHEN 'paused' THEN 'paused' ELSE 'active' END",
   ],
   [
     "program_source_state",

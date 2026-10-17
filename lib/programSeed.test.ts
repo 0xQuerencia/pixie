@@ -64,7 +64,7 @@ test("seeding twice changes nothing", () => {
 
 test("a seed never activates a program that was already deployed", () => {
   programSeed.apply(load(DEMO), { workspaceId: WORKSPACE });
-  db.saveProgram({ ...programs.get("demo-program"), lifecycle: "paused" });
+  db.handle().query("UPDATE programs SET lifecycle = 'paused' WHERE id = ?").run("demo-program");
   programs.invalidate();
   programSeed.apply(load(DEMO), { workspaceId: WORKSPACE });
   assert.equal(programs.get("demo-program").lifecycle, "paused");

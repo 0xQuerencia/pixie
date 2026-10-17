@@ -111,6 +111,15 @@ function putBoolean(out: Record<string, unknown>, input: Record<string, unknown>
   if (value !== undefined) out[key] = value;
 }
 
+function canonicalDecision(value: unknown): string | undefined {
+  const action = String(value || "").toLowerCase();
+  if (["answer", "reply"].includes(action)) return "answer";
+  if (["escalate", "handoff"].includes(action)) return "escalate";
+  if (["clarify", "ask_clarifying"].includes(action)) return "clarify";
+  if (["silent", "silence", "ignored", "ignore", "abstain"].includes(action)) return "ignored";
+  return undefined;
+}
+
 function putStrings(
   out: Record<string, unknown>,
   input: Record<string, unknown>,
@@ -215,6 +224,7 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
   if (stage === "decision") {
     for (const key of ["expectedAction", "action", "reason"]) putString(out, input, key, 240);
     putBoolean(out, input, "grounded");
+    out.decision = canonicalDecision(input.action || input.expectedAction) || "unknown";
     return out;
   }
 
@@ -226,6 +236,7 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
 
   if (stage === "final" || stage === "final_action") {
     for (const key of ["action", "finalAction", "reason"]) putString(out, input, key, 240);
+    out.decision = canonicalDecision(input.action || input.finalAction) || "unknown";
     return out;
   }
 

@@ -69,6 +69,7 @@ alter table hosted_programs add column if not exists incident_mode text not null
 alter table hosted_programs add column if not exists lifecycle text not null default 'draft'
   check (lifecycle in ('draft', 'testing', 'approved', 'active', 'paused', 'archived'));
 
+
 -- Mirrors Core's programs.public_tickets_enabled (lib/schema.js): an
 -- independent kill switch for auto-opening tickets from this program's
 -- public help channel, toggleable here or live via /pixie-program tickets
@@ -180,4 +181,5 @@ create table if not exists wizard_global_access (
 alter table hosted_programs add column if not exists behavior jsonb not null default '{}'::jsonb;
 alter table hosted_programs add column if not exists runtime_status text not null default 'sandbox'
   check (runtime_status in ('sandbox', 'live', 'paused'));
+
 alter table hosted_program_helpers add column if not exists eligible_for_pings boolean not null default true;

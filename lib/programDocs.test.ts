@@ -119,3 +119,30 @@ test("official seeded docs participate in scoped retrieval without leaking acros
   assert.match(bContext, /green mango sticker/);
   assert.doesNotMatch(bContext, /blue pineapple sticker/);
 });
+
+test("document updates, supersedes and deletes invalidate retrieval immediately", () => {
+  programs.saveProgram({ id: "docs-invalidate", name: "Docs Invalidate", sharedSources: false, lifecycle: "active" });
+  const first = docs.createDoc("docs-invalidate", {
+    section: "faq",
+    title: "Versioned FAQ",
+    body: "version alpha answer",
+    trust: "official",
+    origin: "manual",
+    updatedBy: "owner",
+  });
+  assert.match(knowledge.getContext("what is the alpha answer", "docs-invalidate"), /version alpha answer/);
+  docs.updateDoc("docs-invalidate", first.id, { body: "version beta answer", updatedBy: "owner" });
+  assert.doesNotMatch(knowledge.getContext("what is the beta answer", "docs-invalidate"), /version alpha answer/);
+  assert.match(knowledge.getContext("what is the beta answer", "docs-invalidate"), /version beta answer/);
+  const replacement = docs.supersedeDoc("docs-invalidate", first.id, {
+    section: "faq",
+    title: "Replacement FAQ",
+    body: "version gamma answer",
+    trust: "official",
+    origin: "manual",
+    updatedBy: "owner",
+  });
+  assert.match(knowledge.getContext("what is the gamma answer", "docs-invalidate"), /version gamma answer/);
+  docs.deleteDoc("docs-invalidate", replacement.id);
+  assert.doesNotMatch(knowledge.getContext("what is the gamma answer", "docs-invalidate"), /version gamma answer/);
+});

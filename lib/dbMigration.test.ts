@@ -24,6 +24,19 @@ function legacyDatabase(file: string) {
   legacy.close();
 }
 
+function legacyProgramsDatabase(file: string) {
+  const legacy = new Database(file, { create: true });
+  legacy.exec(`
+    CREATE TABLE programs (id TEXT PRIMARY KEY, name TEXT NOT NULL, posture TEXT, scope TEXT, status TEXT, updated_at INTEGER);
+    INSERT INTO programs (id, name, status) VALUES
+      ('legacy-null', 'Legacy null', NULL),
+      ('legacy-live', 'Legacy live', 'live'),
+      ('legacy-sandbox', 'Legacy sandbox', 'sandbox'),
+      ('legacy-paused', 'Legacy paused', 'paused');
+  `);
+  legacy.close();
+}
+
 test("opening a legacy database keeps answered, thread and topic state", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pixie-migrate-"));
   const file = path.join(dir, "legacy.db");
@@ -58,6 +71,46 @@ test("opening a migrated database twice changes nothing", () => {
     db.close();
     db.open(file);
     assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM answered_messages").get().n, 2);
+  } finally {
+    db.close();
+    db.open(":memory:");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle migration preserves effective status for legacy program rows", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pixie-lifecycle-migrate-"));
+  const file = path.join(dir, "legacy-programs.db");
+  legacyProgramsDatabase(file);
+  try {
+    db.close();
+    db.open(file);
+    const rows = db.handle().query("SELECT id, lifecycle FROM programs WHERE id LIKE 'legacy-%' ORDER BY id").all();
+    assert.deepEqual(rows, [
+      { id: "legacy-live", lifecycle: "active" },
+      { id: "legacy-null", lifecycle: "active" },
+      { id: "legacy-paused", lifecycle: "paused" },
+      { id: "legacy-sandbox", lifecycle: "draft" },
+    ]);
+  } finally {
+    db.close();
+    db.open(":memory:");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an existing lifecycle value is not remapped by migration", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pixie-lifecycle-existing-"));
+  const file = path.join(dir, "existing-lifecycle.db");
+  const legacy = new Database(file, { create: true });
+  legacy.exec(
+    "CREATE TABLE programs (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT, lifecycle TEXT); INSERT INTO programs VALUES ('explicit', 'Explicit', 'live', 'paused');",
+  );
+  legacy.close();
+  try {
+    db.close();
+    db.open(file);
+    assert.equal(db.handle().query("SELECT lifecycle FROM programs WHERE id = 'explicit'").get().lifecycle, "paused");
   } finally {
     db.close();
     db.open(":memory:");

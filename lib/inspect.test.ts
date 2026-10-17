@@ -58,3 +58,33 @@ test("inspect previews escalation without creating work", async () => {
     lookup.lookupAnswer = original;
   }
 });
+
+test("read-only inspection does not suppress concurrent normal telemetry", async () => {
+  programs.saveProgram({
+    id: "inspect-concurrent",
+    name: "Concurrent",
+    lifecycle: "testing",
+    helpChannel: "C-CONCURRENT",
+  });
+  const original = lookup.lookupAnswer;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  lookup.lookupAnswer = async () => {
+    await waiting;
+    return { answer: "not grounded", verification: { sendable: false } };
+  };
+  const before = db.handle().query("SELECT COUNT(*) AS n FROM metrics WHERE kind = 'concurrent_normal'").get().n;
+  try {
+    const inspection = inspect.inspect("inspect-concurrent", "question");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    db.recordMetric("concurrent_normal");
+    release();
+    await inspection;
+  } finally {
+    lookup.lookupAnswer = original;
+  }
+  const after = db.handle().query("SELECT COUNT(*) AS n FROM metrics WHERE kind = 'concurrent_normal'").get().n;
+  assert.equal(after, before + 1);
+});

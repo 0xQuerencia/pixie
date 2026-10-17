@@ -14,6 +14,7 @@ import type {
   ThreadRow,
 } from "./db.types";
 import type { Program } from "./types";
+import writeContext = require("./writeContext");
 
 const { Database } = sqlite;
 const { SCHEMA, MIGRATIONS, POST_MIGRATION_SCHEMA } = schema;
@@ -580,6 +581,7 @@ function getTopics(userId: string): TopicRow[] {
 }
 
 function recordGap(question: string, userId = null, channel = null, messageTs = null, programId = null) {
+  if (writeContext.suppressed()) return;
   query(
     "INSERT INTO doc_gaps (question, user_id, channel, message_ts, program_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   ).run(normalizeQuestion(question), userId, channel, messageTs, programId, now());
@@ -981,6 +983,7 @@ function clearTakeover(threadTs: string) {
 }
 
 function recordMetric(kind: string, latencyMs = null, detail = null, programId = null) {
+  if (writeContext.suppressed()) return;
   query("INSERT INTO metrics (kind, latency_ms, detail, program_id, created_at) VALUES (?, ?, ?, ?, ?)").run(
     kind,
     latencyMs,
@@ -991,6 +994,7 @@ function recordMetric(kind: string, latencyMs = null, detail = null, programId =
 }
 
 function recordLlmUsage(entry: Record<string, unknown> = {}) {
+  if (writeContext.suppressed()) return;
   try {
     query(
       `INSERT INTO llm_usage
@@ -1251,6 +1255,7 @@ function countRecentRequests(userId: string, windowMs: number) {
 }
 
 function recordRequest(userId: string) {
+  if (writeContext.suppressed()) return;
   query("INSERT INTO rate_limits (user_id, created_at) VALUES (?, ?)").run(userId, now());
 }
 
@@ -1413,7 +1418,7 @@ function getDbPrograms() {
 }
 
 function saveProgram(p: PersistedProgram) {
-  const existing = query("SELECT 1 FROM programs WHERE id = ?").get(p.id);
+  const existing = query<{ lifecycle: string | null }>("SELECT lifecycle FROM programs WHERE id = ?").get(p.id);
   const nowTs = now();
   const channels = p.channels ? JSON.stringify(p.channels) : null;
   const sources = p.sources ? JSON.stringify(p.sources) : null;
@@ -1429,13 +1434,15 @@ function saveProgram(p: PersistedProgram) {
         ? p.behavior
         : null;
   const status = p.status && ["sandbox", "live", "paused"].includes(p.status) ? p.status : null;
-  const lifecycle = ["draft", "testing", "approved", "active", "paused", "archived"].includes(p.lifecycle || "")
-    ? p.lifecycle
-    : p.status === "live"
-      ? "active"
-      : p.status === "paused"
-        ? "paused"
-        : "active";
+  const lifecycle = existing
+    ? existing.lifecycle || "active"
+    : ["draft", "testing", "approved", "active", "paused", "archived"].includes(p.lifecycle || "")
+      ? p.lifecycle
+      : p.status === "live"
+        ? "active"
+        : p.status === "paused"
+          ? "paused"
+          : "active";
   const learning = p.learning === "review" ? "review" : "auto";
   const sensitive = p.sensitiveCategories ? JSON.stringify(p.sensitiveCategories) : null;
   const VALID_INCIDENT_MODES = ["ANSWER_ONLY", "ANSWER_AND_TRACK", "NORMAL_TICKET"];

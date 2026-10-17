@@ -1,6 +1,7 @@
 import db = require("./db");
 import docs = require("./programDocs");
 import programs = require("./programs");
+import writeContext = require("./writeContext");
 
 interface InspectOptions {
   role?: string;
@@ -62,24 +63,7 @@ async function traceStep<T>(
 
 async function answerWithoutWrites(question: string, program: Record<string, unknown>, context: string) {
   const lookup = require("./lookup");
-  const original = {
-    recordMetric: db.recordMetric,
-    recordLlmUsage: db.recordLlmUsage,
-    recordGap: db.recordGap,
-    recordRequest: db.recordRequest,
-  };
-  db.recordMetric = () => undefined;
-  db.recordLlmUsage = () => undefined;
-  db.recordGap = () => undefined;
-  db.recordRequest = () => undefined;
-  try {
-    return await lookup.lookupAnswer(question, context, program, null, { skipCache: true });
-  } finally {
-    db.recordMetric = original.recordMetric;
-    db.recordLlmUsage = original.recordLlmUsage;
-    db.recordGap = original.recordGap;
-    db.recordRequest = original.recordRequest;
-  }
+  return writeContext.run(true, () => lookup.lookupAnswer(question, context, program, null, { skipCache: true }));
 }
 
 function escalation(program: Record<string, unknown>, question: string, reason: string) {

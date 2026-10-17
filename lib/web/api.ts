@@ -919,7 +919,9 @@ function internalProgramSync(id: string, body: ProgramSyncBody = {}): ApiRespons
   if (lifecycleValue !== undefined && lifecycleValue !== null && !lifecycle.LIFECYCLES.includes(lifecycleValue)) {
     return { error: `invalid lifecycle ${lifecycleValue}` };
   }
-  if (lifecycleValue === "active") return { error: "active lifecycle requires POST /programs/:id/lifecycle" };
+  if (lifecycleValue !== undefined && lifecycleValue !== null) {
+    return { error: "lifecycle changes require POST /programs/:id/lifecycle" };
+  }
 
   const routing = require("../routing");
   const channels = Array.isArray(programChannels) ? programChannels : [];
@@ -937,18 +939,30 @@ function internalProgramSync(id: string, body: ProgramSyncBody = {}): ApiRespons
     merged.behavior = programModel.mergeBehavior(existing?.behavior || null, behaviorPatch);
   }
   if (statusValue !== undefined && statusValue !== null) merged.status = statusValue;
-  if (lifecycleValue !== undefined && lifecycleValue !== null) merged.lifecycle = lifecycleValue;
-  else if (!merged.lifecycle) merged.lifecycle = "draft";
+  if (!existing && !merged.lifecycle) merged.lifecycle = "draft";
 
   const roleCheck = validateSyncChannelRoles(id, merged, channels, workspaceId);
   if (roleCheck) return roleCheck;
   programs.saveProgram(merged);
-  if (
+  const semanticKeys = ["sources", "behavior", "pinnedRules", "requireGroundedAnswer", "aiAnswers", "autoEscalate"];
+  const stable = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value as Record<string, unknown>)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
+  };
+  const changed =
     existing &&
-    ["sources", "behavior", "pinnedRules", "requireGroundedAnswer", "aiAnswers", "autoEscalate"].some((key) =>
-      Object.hasOwn(body, key),
-    )
-  ) {
+    semanticKeys.some(
+      (key) =>
+        Object.hasOwn(body, key) &&
+        stable((merged as Record<string, unknown>)[key]) !== stable((existing as Record<string, unknown>)[key]),
+    );
+  if (changed) {
     lifecycle.contentChanged(id, body.actorId || body.claimedBy || null);
   }
 
@@ -1162,10 +1176,11 @@ function internalProgramPurge(programId: string, body: Record<string, unknown> =
   const missing = needProgram(programId);
   if (missing) return missing;
   if (body.archive !== true) return { error: "archive must be true" };
+  if (lifecycle.current(programId) !== "archived") return { error: "program must be archived before purge" };
   try {
     const purge = require("../programPurge");
     if (typeof purge.purgeProgram !== "function") return { error: "purge unavailable", status: 501 };
-    return purge.purgeProgram(programId, { dryRun: false });
+    return purge.purgeProgram(db.handle(), programId, { dryRun: body.dryRun === true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "MODULE_NOT_FOUND")
       return { error: "purge unavailable", status: 501 };

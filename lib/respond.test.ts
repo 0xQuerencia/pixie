@@ -1651,7 +1651,7 @@ test("rate-limit notice failure still records one metric and final trace", async
   const finalAction = traceStore
     .forThread(program.id, threadTs)
     .find((row: { stage: string }) => row.stage === "final_action");
-  assert.deepEqual(finalAction?.payload, { action: "silence", reason: "rate_limited" });
+  assert.deepEqual(finalAction?.payload, { action: "silence", reason: "rate_limited", decision: "ignored" });
 });
 
 test("same-thread turns serialize before the next provider call or placeholder", async () => {

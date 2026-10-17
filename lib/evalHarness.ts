@@ -175,8 +175,8 @@ async function run(programId: string, triggeredBy: string | null = null) {
     }
   }
   const passed = results.filter((item) => item.passed).length;
-  const failed = results.length - passed;
-  const status = failed === 0 ? "passed" : "failed";
+  const failed = results.length === 0 ? 1 : results.length - passed;
+  const status = results.length > 0 && failed === 0 ? "passed" : "failed";
   db.handle()
     .query(
       "UPDATE program_eval_runs SET finished_at = ?, total = ?, passed = ?, failed = ?, status = ?, results = ? WHERE id = ? AND program_id = ?",

@@ -120,3 +120,29 @@ test("a ticketing program still needs an organizer channel", () => {
   assert.equal(result.ok, false);
   assert.match(result.blockers.join(" "), /organizer channel/);
 });
+
+test("ordinary metadata saves preserve lifecycle and archived programs cannot be revived", () => {
+  programs.saveProgram({ id: "life-write", name: "Write", lifecycle: "draft" });
+  programs.saveProgram({ id: "life-write", name: "Renamed", lifecycle: "active" });
+  assert.equal(lifecycle.current("life-write"), "draft");
+  const sync = require("./web/api").internalProgramSync("life-write", { name: "Synced" });
+  assert.equal(sync.ok, true);
+  assert.equal(lifecycle.current("life-write"), "draft");
+  db.handle().query("UPDATE programs SET lifecycle = 'archived' WHERE id = ?").run("life-write");
+  programs.saveProgram({ id: "life-write", name: "Still archived", status: "live" });
+  assert.equal(lifecycle.current("life-write"), "archived");
+});
+
+test("an empty eval run cannot approve a program", () => {
+  programs.saveProgram({ id: "life-empty-eval", name: "Empty eval", lifecycle: "testing" });
+  db.syncHelper({ programId: "life-empty-eval", userId: "U-empty-owner", role: "owner" });
+  const hash = docs.contentHash("life-empty-eval");
+  db.handle()
+    .query(
+      "INSERT INTO program_eval_runs (program_id, content_hash, started_at, finished_at, total, passed, failed, status, results, triggered_by) VALUES (?, ?, ?, ?, 0, 0, 0, 'failed', '[]', ?)",
+    )
+    .run("life-empty-eval", hash, Date.now(), Date.now(), "U-empty-owner");
+  const result = lifecycle.transition("life-empty-eval", "approved", "U-empty-owner");
+  assert.equal(result.ok, false);
+  assert.match(result.blockers.join(" "), /at least one passing case/);
+});

@@ -188,3 +188,12 @@ test("legacy grounding rows keep their unsupported claims on read", () => {
   assert.equal(row.payload.claims.length, 1);
   assert.equal(row.payload.claims[0].claim, "old unsupported claim");
 });
+
+test("trace decision filtering uses the normalized final decision", () => {
+  traceStore.append({ programId: "trace-decisions", stage: "decision", payload: { action: "reply" } });
+  traceStore.append({ programId: "trace-decisions", stage: "final_action", payload: { finalAction: "escalate" } });
+  traceStore.append({ programId: "trace-decisions", stage: "final", payload: { action: "silence" } });
+  assert.equal(traceStore.list("trace-decisions", { decision: "answer" }).length, 1);
+  assert.equal(traceStore.list("trace-decisions", { decision: "escalate" }).length, 1);
+  assert.equal(traceStore.list("trace-decisions", { decision: "ignored" }).length, 1);
+});

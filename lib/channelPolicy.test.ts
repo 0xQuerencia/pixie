@@ -32,13 +32,8 @@ test("production roles require program claims and active lifecycle", () => {
   assert.equal(policy.resolve("C-POLICY-MAIN", "T-POLICY").role, "main");
   assert.equal(policy.resolve("C-POLICY-UNCLAIMED", "T-POLICY").role, "none");
 
-  programs.saveProgram({
-    id: "policy-a",
-    name: "Policy A",
-    lifecycle: "draft",
-    helpChannel: "C-POLICY-HELP",
-    channels: ["C-POLICY-MAIN"],
-  });
+  db.handle().query("UPDATE programs SET lifecycle = 'draft' WHERE id = ?").run("policy-a");
+  programs.invalidate();
   assert.equal(policy.resolve("C-POLICY-HELP", "T-POLICY").settings.enabled, false);
 });
 
