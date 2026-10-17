@@ -55,6 +55,10 @@ function ownerOrAdmin(programId: string, actor: string | null): boolean {
 function blockersFor(programId: string, from: Lifecycle, to: Lifecycle, actor: string | null): string[] {
   const blockers: string[] = [];
   if (from === to) return blockers;
+  if (from !== "draft" && !ownerOrAdmin(programId, actor)) {
+    blockers.push(`${from}->${to} requires a program owner or admin`);
+    return blockers;
+  }
   if (to === "archived") return blockers;
   const allowed =
     (from === "draft" && to === "testing") ||
@@ -113,7 +117,9 @@ function transition(programId: string, to: string, actor: string | null = null):
   if (!set(programId, to)) return { ok: false, lifecycle: from, blockers: ["program is not persisted"] };
   if (to === "archived") {
     db.handle()
-      .query("UPDATE programs SET posture = 'muted', support_active = 0, updated_at = ? WHERE id = ?")
+      .query(
+        "UPDATE programs SET posture = 'muted', support_active = 0, help_channel = NULL, channels = '[]', updated_at = ? WHERE id = ?",
+      )
       .run(Date.now(), programId);
   }
   audit.record({
@@ -129,6 +135,7 @@ function transition(programId: string, to: string, actor: string | null = null):
 
 function contentChanged(programId: string, actor: string | null = null) {
   const lifecycle = current(programId);
+  db.handle().query("UPDATE programs SET live_test = 'pending', live_test_note = NULL WHERE id = ?").run(programId);
   if (lifecycle === "approved") {
     set(programId, "testing");
     audit.record({
@@ -144,4 +151,19 @@ function contentChanged(programId: string, actor: string | null = null) {
   return lifecycle;
 }
 
-export = { LIFECYCLES, transition, contentChanged, current };
+const LIVE_TEST_STATES = ["pending", "passed", "failed"] as const;
+
+function setLiveTest(programId: string, status: string, actor: string | null, note: string | null = null) {
+  if (!current(programId)) return { ok: false, error: "unknown program" };
+  if (!LIVE_TEST_STATES.includes(status as (typeof LIVE_TEST_STATES)[number]))
+    return { ok: false, error: "status must be pending, passed or failed" };
+  if (!ownerOrAdmin(programId, actor))
+    return { ok: false, error: "live test status requires a program owner or admin" };
+  db.handle()
+    .query("UPDATE programs SET live_test = ?, live_test_note = ?, updated_at = ? WHERE id = ?")
+    .run(status, note ? String(note).slice(0, 500) : null, Date.now(), programId);
+  programs.invalidate?.();
+  return { ok: true, status };
+}
+
+export = { LIFECYCLES, LIVE_TEST_STATES, transition, setLiveTest, contentChanged, current };
