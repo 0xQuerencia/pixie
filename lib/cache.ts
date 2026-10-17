@@ -70,7 +70,7 @@ function put(
   }
   const key = keyFor(question, programId);
   if (!key) return;
-  putCachedAnswer(key, question, result, options || {});
+  putCachedAnswer(key, question, result, options || {}, programId);
 }
 
 function cacheRow(hash: string) {
@@ -102,16 +102,17 @@ function putCachedAnswer(
   question: string,
   result: CacheResult,
   { refreshed = false }: CacheOptions = {},
+  programId: string | null = null,
 ) {
   const t = db.now();
   db.handle()
     .query(
-      `INSERT INTO answer_cache (question_hash, question, source, answer, created_at, last_asked_at, refreshed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO answer_cache (question_hash, program_id, question, source, answer, created_at, last_asked_at, refreshed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(question_hash) DO UPDATE SET
-         source = excluded.source, answer = excluded.answer, refreshed_at = excluded.refreshed_at`,
+         program_id = excluded.program_id, source = excluded.source, answer = excluded.answer, refreshed_at = excluded.refreshed_at`,
     )
-    .run(hash, question, result.source || null, result.answer, t, refreshed ? null : t, t);
+    .run(hash, programId, question, result.source || null, result.answer, t, refreshed ? null : t, t);
 }
 
 function staleCacheEntries(staleAfterMs: number, limit: number) {

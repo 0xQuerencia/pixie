@@ -10,6 +10,8 @@
     "migrate:check": "bun scripts/migrate-railway.mjs --check",
     "migrate:write": "bun scripts/migrate-railway.mjs --write",
     "migrate:dump": "bun scripts/migrate-railway.mjs --dump-expected",
+    "archive:programs": "bun scripts/program-archive.ts",
+    "reset:programs": "bun scripts/program-reset.ts",
     "smoke": "node scripts/smoke-test.js",
     "test:diff": "node scripts/test-diff.mjs",
     "test": "bun scripts/run-tests.mjs",

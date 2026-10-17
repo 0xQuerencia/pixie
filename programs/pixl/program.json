@@ -1,0 +1,61 @@
+{
+  "id": "pixl",
+  "name": "Pixl",
+  "description": "Pixl is an official Hack Club YSWS (You Ship, We Ship) program where you build hardware or software projects, log your hours, ship them for review, and earn pixels to spend on real and digital rewards. It runs as a multiplayer open world where NPCs hand out trials (project briefs with prizes), alongside any inventions you choose to build yourself.",
+  "supportName": "Pixie",
+  "posture": "passive",
+  "channels": {
+    "help": "C0B6STY9G5N",
+    "organizer": null,
+    "main": [
+      "C0B5P4N0WHH",
+      "C0BK4F6STFZ"
+    ]
+  },
+  "sources": [
+    {
+      "name": "Pixl Docs (repo)",
+      "type": "github-dir",
+      "url": "https://api.github.com/repos/hackclub/pixl/contents/docs"
+    },
+    {
+      "name": "Pixl Docs site",
+      "type": "url",
+      "url": "https://pixl.hackclub.com/docs"
+    },
+    {
+      "name": "Pixl Repository",
+      "type": "url",
+      "url": "https://github.com/hackclub/pixl"
+    }
+  ],
+  "instructions": {
+    "mayAnswer": [
+      "Eligibility: 18 or under when shipping; what counts and what doesn't count as a project",
+      "How hours become pixels and RE: tiers, rates, levels, milestones, Core Vault",
+      "Trials vs inventions, trial reward choice, collaboration payouts",
+      "Shipping requirements for software and hardware, journals, README and demo needs",
+      "Shop: regional catalogues, order stages, address requirement, level trophies",
+      "Referral window, AI disclosure policy, where to get help (#pixl)"
+    ],
+    "mustEscalate": [
+      "Questions about a specific submission's review status, queue position, or rejection reason",
+      "Account, login, identity-verification or address-sync problems",
+      "Specific orders, payments, refunds, customs or grant mechanics",
+      "Anything the official docs do not cover"
+    ],
+    "neverDo": [
+      "Never invent dates, deadlines, review timelines, delivery times, prices or grant rules that are not in the docs",
+      "Never state an AI percentage limit (such as 30%): software AI use is fine when disclosed, and hardware designs must be original and not AI-generated",
+      "Never carry over stale or Slack-only facts (review SLAs, Beacon, grant stacking, event dates) as current policy",
+      "Never promise an outcome for a specific submission, order or account",
+      "Keep software and hardware requirements separate: answer a software question with software rules only and a hardware question with hardware rules only."
+    ]
+  },
+  "links": {},
+  "settings": {
+    "ticketsEnabled": false,
+    "helperPing": true,
+    "ticketVisibility": "dashboard"
+  }
+}

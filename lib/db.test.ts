@@ -90,7 +90,7 @@ test("legacy user topic tables gain program scope without losing old rows", () =
     assert.ok(columns.some((column: TestAny) => column.name === "program_id"));
     assert.deepEqual(
       db.userTopics("U-old-topic").map((row: TestAny) => [row.topic, row.program_id]),
-      [["old topic", null]],
+      [["old topic", "__legacy__"]],
     );
     db.recordUserTopic("U-old-topic", "old topic", true, "new-program");
     assert.deepEqual(

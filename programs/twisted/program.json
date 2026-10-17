@@ -1,0 +1,64 @@
+{
+  "id": "twisted",
+  "name": "Twisted",
+  "description": "Twisted is a Hack Club YSWS (You Ship, We Ship) where teens design and build projects, from software to hardware, complete a roadmap of pathway challenges, and work toward earning a laptop and PC. It is free and open to teenagers aged 13-18 worldwide.",
+  "supportName": "Twisted Help",
+  "posture": "active",
+  "channels": {
+    "help": null,
+    "organizer": null,
+    "main": []
+  },
+  "sources": [
+    {
+      "name": "Twisted Website",
+      "type": "url",
+      "url": "https://twisted.hackclub.com/"
+    },
+    {
+      "name": "Twisted Docs Site",
+      "type": "url",
+      "url": "https://docs.twisted.hackclub.com/"
+    },
+    {
+      "name": "Twisted Docs Repository",
+      "type": "github-repo",
+      "url": "https://github.com/hackclub/twisted-docs"
+    },
+    {
+      "name": "Twisted Website Repository",
+      "type": "github-repo",
+      "url": "https://github.com/hackclub/twisted"
+    },
+    {
+      "name": "Hack Club Fulfillment Bounty",
+      "type": "url",
+      "url": "https://forms.hackclub.com/bounty"
+    }
+  ],
+  "instructions": {
+    "mayAnswer": [
+      "What Twisted is, that it is free, and who can join (ages 13-18 worldwide).",
+      "Journal/devlog rules and how Hackatime time tracking works.",
+      "Software shipping requirements and hardware design requirements.",
+      "Hardware funding basics (up to $400) and the JLCPCB estimate flow.",
+      "Where to ask for help (#twisted-help, do-not-DM rule) and the Fulfillment Bounty form.",
+      "Pathways, twists, and shop basics as described in the official docs and platform UI."
+    ],
+    "mustEscalate": [
+      "Anything about a specific account, project, order, prize, or review state (why rejected, when reviewed, missing prize).",
+      "Review timelines, queue positions, or when a specific project will be looked at.",
+      "Teams or solo rules, changing an existing project idea, laptop model or laptop-hour details, or anything not covered by the docs."
+    ],
+    "neverDo": [
+      "Never invent or confirm an end date, deadline, reward rate, or laptop-hour number.",
+      "Never apply another YSWS program's rules to Twisted.",
+      "Never promise review timing or describe internal review mechanics as fact.",
+      "Keep software and hardware requirements separate: answer a software question with software rules only and a hardware question with hardware rules only."
+    ]
+  },
+  "links": {},
+  "settings": {
+    "ticketsEnabled": false
+  }
+}

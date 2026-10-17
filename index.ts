@@ -149,6 +149,11 @@ function main() {
     log.error("process", "unhandled rejection:", reason instanceof Error ? reason.message : reason);
   });
 
+  if (require("./lib/maintenance").enabled()) {
+    require("./lib/maintenance").run();
+    return;
+  }
+
   const askIdx = process.argv.indexOf("--ask");
   if (askIdx !== -1) {
     const question = process.argv[askIdx + 1];

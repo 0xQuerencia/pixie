@@ -622,6 +622,26 @@ export interface CoreTraceRow {
   requestId: string | null;
 }
 
+export interface CoreTrace {
+  id: number;
+  ticket_id: number | null;
+  stage: string;
+  payload: Record<string, unknown>;
+  created_at: number;
+  request_id: string | null;
+}
+
+export async function coreTraces(programId: string, params: { limit?: number; decision?: string; q?: string } = {}): Promise<{ traces: CoreTrace[]; summary: Record<string, number> }> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== "") query.set(key, String(value));
+  const suffix = query.toString() ? `?${query}` : "";
+  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/traces${suffix}`, "trace list failed");
+}
+
+export async function coreTrace(programId: string, traceId: number): Promise<{ trace: CoreTrace }> {
+  return request(`/internal/v1/programs/${encodeURIComponent(programId)}/traces/${traceId}`, "trace lookup failed");
+}
+
 export async function coreDashboardTicketSearch(
   programId: string,
   params: DashboardTicketSearchParams = {},

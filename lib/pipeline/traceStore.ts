@@ -111,6 +111,15 @@ function putBoolean(out: Record<string, unknown>, input: Record<string, unknown>
   if (value !== undefined) out[key] = value;
 }
 
+function canonicalDecision(value: unknown): string | undefined {
+  const action = String(value || "").toLowerCase();
+  if (["answer", "reply"].includes(action)) return "answer";
+  if (["escalate", "handoff"].includes(action)) return "escalate";
+  if (["clarify", "ask_clarifying"].includes(action)) return "clarify";
+  if (["silent", "silence", "ignored", "ignore", "abstain"].includes(action)) return "ignored";
+  return undefined;
+}
+
 function putStrings(
   out: Record<string, unknown>,
   input: Record<string, unknown>,
@@ -215,6 +224,7 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
   if (stage === "decision") {
     for (const key of ["expectedAction", "action", "reason"]) putString(out, input, key, 240);
     putBoolean(out, input, "grounded");
+    out.decision = canonicalDecision(input.action || input.expectedAction) || "unknown";
     return out;
   }
 
@@ -226,6 +236,7 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
 
   if (stage === "final" || stage === "final_action") {
     for (const key of ["action", "finalAction", "reason"]) putString(out, input, key, 240);
+    out.decision = canonicalDecision(input.action || input.finalAction) || "unknown";
     return out;
   }
 
@@ -344,6 +355,41 @@ function forThread(programId: string, threadTs: string) {
   );
 }
 
+function list(programId: string, options: { limit?: number; decision?: string; q?: string } = {}) {
+  ensureSchema();
+  const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 500);
+  const rows = readRows(
+    db
+      .handle()
+      .query(
+        `SELECT id,ticket_id,stage,payload_json,created_at,request_id
+       FROM answer_traces WHERE program_id = ? AND expires_at > ?
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .all(programId, Date.now(), limit) as TraceRow[],
+  );
+  return rows.filter((row: Record<string, unknown>) => {
+    const payload = (row.payload || {}) as Record<string, unknown>;
+    const decision = typeof payload.decision === "string" ? payload.decision : "";
+    return (
+      (!options.decision || decision === options.decision) &&
+      (!options.q || JSON.stringify(payload).toLowerCase().includes(options.q.toLowerCase()))
+    );
+  });
+}
+
+function get(programId: string, id: number) {
+  ensureSchema();
+  const row = db
+    .handle()
+    .query(
+      `SELECT id,ticket_id,stage,payload_json,created_at,request_id
+     FROM answer_traces WHERE program_id = ? AND id = ? AND expires_at > ?`,
+    )
+    .get(programId, id, Date.now()) as TraceRow | null;
+  return row ? readRows([row])[0] || null : null;
+}
+
 function sweepExpired(programId?: string, now = Date.now()): number {
   ensureSchema();
   if (programId !== undefined) {
@@ -353,4 +399,4 @@ function sweepExpired(programId?: string, now = Date.now()): number {
   return db.handle().query("DELETE FROM answer_traces WHERE expires_at <= ?").run(now).changes;
 }
 
-export = { append, forTicket, forThread, sweepExpired, ensureSchema, sanitize, DEFAULT_TTL_MS };
+export = { append, forTicket, forThread, list, get, sweepExpired, ensureSchema, sanitize, DEFAULT_TTL_MS };

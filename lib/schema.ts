@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS schema_data_migrations (
 
 CREATE TABLE IF NOT EXISTS answer_cache (
   question_hash TEXT PRIMARY KEY,
+  program_id    TEXT,
   question      TEXT NOT NULL,
   source        TEXT,
   answer        TEXT NOT NULL,
@@ -133,6 +134,7 @@ CREATE TABLE IF NOT EXISTS active_guides (
 );
 
 CREATE TABLE IF NOT EXISTS muted_threads (
+  workspace_id TEXT NOT NULL DEFAULT 'default',
   thread_ts    TEXT PRIMARY KEY,
   channel      TEXT,
   muted_at     INTEGER NOT NULL
@@ -256,10 +258,18 @@ CREATE INDEX IF NOT EXISTS idx_answer_traces_thread
 const MIGRATIONS = [
   ["doc_gaps", "message_ts", "ALTER TABLE doc_gaps ADD COLUMN message_ts TEXT"],
 
+  [
+    "answered_messages",
+    "workspace_id",
+    "ALTER TABLE answered_messages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
+  ],
+  ["answered_messages", "channel", "ALTER TABLE answered_messages ADD COLUMN channel TEXT NOT NULL DEFAULT ''"],
+
   ["support_memory", "normalized_value", "ALTER TABLE support_memory ADD COLUMN normalized_value TEXT"],
   ["support_memory", "updated_at", "ALTER TABLE support_memory ADD COLUMN updated_at INTEGER"],
 
   ["answer_cache", "ask_count", "ALTER TABLE answer_cache ADD COLUMN ask_count INTEGER NOT NULL DEFAULT 1"],
+  ["answer_cache", "program_id", "ALTER TABLE answer_cache ADD COLUMN program_id TEXT"],
   ["answer_cache", "last_asked_at", "ALTER TABLE answer_cache ADD COLUMN last_asked_at INTEGER"],
   ["answer_cache", "refreshed_at", "ALTER TABLE answer_cache ADD COLUMN refreshed_at INTEGER"],
 
@@ -413,7 +423,18 @@ const MIGRATIONS = [
   [
     "thread_takeover",
     "table",
-    "CREATE TABLE IF NOT EXISTS thread_takeover (thread_ts TEXT PRIMARY KEY, channel TEXT, by_user TEXT, created_at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS thread_takeover (workspace_id TEXT NOT NULL DEFAULT 'default', thread_ts TEXT PRIMARY KEY, channel TEXT, by_user TEXT, created_at INTEGER NOT NULL)",
+  ],
+  ["threads", "workspace_id", "ALTER TABLE threads ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"],
+  [
+    "muted_threads",
+    "workspace_id",
+    "ALTER TABLE muted_threads ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
+  ],
+  [
+    "thread_takeover",
+    "workspace_id",
+    "ALTER TABLE thread_takeover ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'",
   ],
   [
     "sla_notifications",
@@ -480,6 +501,8 @@ const MIGRATIONS = [
   ["programs", "behavior", "ALTER TABLE programs ADD COLUMN behavior TEXT"],
   ["programs", "status", "ALTER TABLE programs ADD COLUMN status TEXT"],
   ["programs", "learning", "ALTER TABLE programs ADD COLUMN learning TEXT NOT NULL DEFAULT 'auto'"],
+  ["programs", "live_test", "ALTER TABLE programs ADD COLUMN live_test TEXT NOT NULL DEFAULT 'pending'"],
+  ["programs", "live_test_note", "ALTER TABLE programs ADD COLUMN live_test_note TEXT"],
 
   [
     "program_helpers",
@@ -490,6 +513,32 @@ const MIGRATIONS = [
     "ticket_metrics_migrations",
     "table",
     "CREATE TABLE IF NOT EXISTS ticket_metrics_migrations (version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
+  ],
+
+  [
+    "programs",
+    "lifecycle",
+    "ALTER TABLE programs ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'draft'; UPDATE programs SET lifecycle = CASE status WHEN 'live' THEN 'active' WHEN 'sandbox' THEN 'draft' WHEN 'paused' THEN 'paused' ELSE 'active' END",
+  ],
+  [
+    "program_source_state",
+    "table",
+    "CREATE TABLE IF NOT EXISTS program_source_state (program_id TEXT NOT NULL, source_key TEXT NOT NULL, text TEXT NOT NULL, content_hash TEXT NOT NULL, fetched_at INTEGER NOT NULL, ok INTEGER NOT NULL, error TEXT NULL, PRIMARY KEY (program_id, source_key))",
+  ],
+  [
+    "program_docs",
+    "table",
+    "CREATE TABLE IF NOT EXISTS program_docs (id INTEGER PRIMARY KEY AUTOINCREMENT, program_id TEXT NOT NULL, section TEXT NOT NULL CHECK (section IN ('overview', 'eligibility', 'how_it_works', 'participation', 'submission', 'grants', 'review', 'rewards', 'deadlines', 'common_problems', 'faq', 'support')), title TEXT NOT NULL, body TEXT NOT NULL, trust TEXT NOT NULL CHECK (trust IN ('official', 'supporting')), origin TEXT NOT NULL CHECK (origin IN ('manual', 'url', 'github', 'slack')), source_ref TEXT NULL, active INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1, supersedes_id INTEGER NULL, updated_by TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, reviewed_by TEXT NULL, reviewed_at INTEGER NULL)",
+  ],
+  [
+    "program_eval_cases",
+    "table",
+    "CREATE TABLE IF NOT EXISTS program_eval_cases (id INTEGER PRIMARY KEY AUTOINCREMENT, program_id TEXT NOT NULL, kind TEXT NOT NULL, question TEXT NOT NULL, expect TEXT NOT NULL, origin TEXT NOT NULL CHECK (origin IN ('manual', 'archive')), active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)",
+  ],
+  [
+    "program_eval_runs",
+    "table",
+    "CREATE TABLE IF NOT EXISTS program_eval_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, program_id TEXT NOT NULL, content_hash TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER NULL, total INTEGER NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL CHECK (status IN ('running', 'passed', 'failed')), results TEXT NOT NULL, triggered_by TEXT NULL)",
   ],
 ];
 
@@ -546,6 +595,11 @@ DELETE FROM support_memory
 CREATE UNIQUE INDEX IF NOT EXISTS idx_support_memory_logical_key
   ON support_memory(program_id, user_id, kind, normalized_value);
 CREATE INDEX IF NOT EXISTS idx_answer_traces_expiry ON answer_traces(expires_at);
+CREATE INDEX IF NOT EXISTS idx_program_docs_program_active ON program_docs(program_id, active, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_program_docs_program_section ON program_docs(program_id, section, active);
+CREATE INDEX IF NOT EXISTS idx_program_source_state_program ON program_source_state(program_id, source_key);
+CREATE INDEX IF NOT EXISTS idx_program_eval_cases_program_active ON program_eval_cases(program_id, active, id);
+CREATE INDEX IF NOT EXISTS idx_program_eval_runs_program_started ON program_eval_runs(program_id, started_at DESC);
 `;
 
 export = { SCHEMA, MIGRATIONS, POST_MIGRATION_SCHEMA };

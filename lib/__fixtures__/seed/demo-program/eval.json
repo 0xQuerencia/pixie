@@ -1,0 +1,4 @@
+[
+  { "kind": "normal", "question": "what do participants get", "expect": { "mode": "answer", "mustInclude": ["pineapple sticker"] } },
+  { "kind": "missing", "question": "what is the capital of mars", "expect": { "mode": "abstain" } }
+]

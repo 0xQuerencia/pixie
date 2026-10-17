@@ -5,6 +5,7 @@ export type SlackClient = WebClient;
 export type Posture = "active" | "passive" | "muted";
 export type TicketVisibility = "thread" | "organizer" | "dashboard";
 export type ProgramStatus = "sandbox" | "live" | "paused";
+export type ProgramLifecycle = "draft" | "testing" | "approved" | "active" | "paused" | "archived";
 export type ChannelRole = "main" | "help" | "organizer" | "dm" | "none";
 
 export interface ProviderTier {
@@ -51,6 +52,9 @@ export interface Program {
   links: Record<string, string>;
   behavior: Record<string, unknown> | null;
   status: ProgramStatus | null;
+  lifecycle?: ProgramLifecycle;
+  liveTest?: "pending" | "passed" | "failed";
+  liveTestNote?: string | null;
   requireGroundedAnswer?: boolean;
   organizer_channel?: string;
   organizer_channel_id?: string;

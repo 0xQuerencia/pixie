@@ -143,4 +143,13 @@ test("cache layer itself is unconditional — !contextPrompt guard lives in the 
   assert.ok(cache.get("char unconditional q"));
   assert.equal(cache.put.length >= 2, true);
 });
+
+test("cache writes persist their tenant program id", () => {
+  cache.put("program cache row", { source: "Docs", answer: "scoped" }, undefined, "cache-program");
+  const row = db
+    .handle()
+    .query("SELECT program_id FROM answer_cache WHERE question_hash = ?")
+    .get(cache.keyFor("program cache row", "cache-program"));
+  assert.equal(row.program_id, "cache-program");
+});
 export {};

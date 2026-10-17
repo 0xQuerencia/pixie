@@ -797,4 +797,27 @@ test("editing a queued fact keeps its program; dashboard teach requires a progra
   assert.match(api.handleTeach("q", "a", "U-e").error, /programId required/);
   assert.ok(api.handleTeach("q2", "a2", "U-e", "edit-prog"));
 });
+
+test("internal program purge passes the DB handle and preserves unrelated rows", () => {
+  api.internalProgramSync("purge-route-a", { name: "Purge A", workspaceId: "TW-PA", programChannels: [] });
+  api.internalProgramSync("purge-route-b", { name: "Purge B", workspaceId: "TW-PB", programChannels: [] });
+  db.handle().query("UPDATE programs SET lifecycle = 'archived' WHERE id = ?").run("purge-route-a");
+  db.handle()
+    .query("INSERT INTO answer_cache (question_hash, program_id, question, answer, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run("purge-route-a-hash", "purge-route-a", "a", "a", Date.now());
+  db.handle()
+    .query("INSERT INTO answer_cache (question_hash, program_id, question, answer, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run("purge-route-b-hash", "purge-route-b", "b", "b", Date.now());
+  const dry = api.internalProgramPurge("purge-route-a", { archive: true, dryRun: true });
+  assert.equal(dry.tables.answer_cache, 1);
+  assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM programs WHERE id = ?").get("purge-route-a").n, 1);
+  const result = api.internalProgramPurge("purge-route-a", { archive: true });
+  assert.equal(result.tables.answer_cache, 1);
+  assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM programs WHERE id = ?").get("purge-route-a").n, 0);
+  assert.equal(db.handle().query("SELECT COUNT(*) AS n FROM programs WHERE id = ?").get("purge-route-b").n, 1);
+  assert.equal(
+    db.handle().query("SELECT COUNT(*) AS n FROM answer_cache WHERE program_id = ?").get("purge-route-b").n,
+    1,
+  );
+});
 export {};

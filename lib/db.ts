@@ -14,6 +14,7 @@ import type {
   ThreadRow,
 } from "./db.types";
 import type { Program } from "./types";
+import writeContext = require("./writeContext");
 
 const { Database } = sqlite;
 const { SCHEMA, MIGRATIONS, POST_MIGRATION_SCHEMA } = schema;
@@ -108,6 +109,9 @@ interface ProgramDbRow extends SqlRow {
   ticket_visibility: string | null;
   behavior: string | null;
   status: string | null;
+  lifecycle: string | null;
+  live_test: string | null;
+  live_test_note: string | null;
   learning: string | null;
   updated_at: number;
 }
@@ -256,6 +260,47 @@ function migrate(database: DatabaseType) {
   }
 }
 
+function migrateScopedState(database: DatabaseType) {
+  const needsRebuild = (table: string, column: string) => {
+    const exists = database.query("SELECT name FROM sqlite_master WHERE type = ? AND name = ?").get("table", table);
+    if (!exists) return false;
+    const columns = database.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+    return !columns.some((entry: { name: string }) => entry.name === column);
+  };
+  const rebuilds: Record<string, string> = {
+    answered_messages: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', ts TEXT NOT NULL, answered_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, ts))`,
+    threads: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, seeded INTEGER NOT NULL DEFAULT 0, pixie_spoke INTEGER NOT NULL DEFAULT 0, helper_pinged INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    muted_threads: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, muted_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    thread_takeover: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, by_user TEXT, created_at INTEGER NOT NULL, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    active_guides: `(workspace_id TEXT NOT NULL DEFAULT 'default', channel TEXT NOT NULL DEFAULT '', thread_ts TEXT NOT NULL, guide_id TEXT NOT NULL, current_step INTEGER NOT NULL DEFAULT 0, user_id TEXT, started_at INTEGER NOT NULL, message_ts TEXT, PRIMARY KEY (workspace_id, channel, thread_ts))`,
+    user_topics: `(user_id TEXT NOT NULL, program_id TEXT NOT NULL DEFAULT '__legacy__', topic TEXT NOT NULL, was_helpful INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, PRIMARY KEY (user_id, program_id, topic))`,
+  };
+  for (const [table, definition] of Object.entries(rebuilds)) {
+    if (!needsRebuild(table, table === "user_topics" ? "program_id" : "workspace_id")) continue;
+    const staging = `${table}__rebuild`;
+    const oldColumns = database
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((entry) => entry.name);
+    database.exec("BEGIN");
+    try {
+      database.exec(`DROP TABLE IF EXISTS ${staging}; CREATE TABLE ${staging} ${definition}`);
+      const kept = database
+        .query<{ name: string }, []>(`PRAGMA table_info(${staging})`)
+        .all()
+        .map((entry) => entry.name)
+        .filter((name) => oldColumns.includes(name));
+      const list = kept.join(", ");
+      database.exec(`INSERT OR IGNORE INTO ${staging} (${list}) SELECT ${list} FROM ${table}`);
+      database.exec(`DROP TABLE ${table}; ALTER TABLE ${staging} RENAME TO ${table}`);
+      database.exec("COMMIT");
+    } catch (error: unknown) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    log.info("db", `rebuilt scoped state table with data kept: ${table}`);
+  }
+}
 function backfillResolvedCredits(database: DatabaseType) {
   const version = "resolved_credit_v1";
   if (database.query("SELECT 1 FROM ticket_metrics_migrations WHERE version = ?").get(version)) return;
@@ -317,6 +362,9 @@ function ensureProgramScopedUserTopics(database: DatabaseType) {
     const columns = database.query<{ name: string; pk: number }, []>("PRAGMA table_info(user_topics)").all();
     const programColumn = columns.find((column) => column.name === "program_id");
     if (!programColumn || programColumn.pk !== 0) return;
+    database
+      .query("UPDATE user_topics SET program_id = '__legacy__' WHERE program_id IS NULL OR program_id = ''")
+      .run();
     database.exec(`
       CREATE TABLE user_topics_scoped (
         user_id     TEXT NOT NULL,
@@ -533,6 +581,7 @@ function getTopics(userId: string): TopicRow[] {
 }
 
 function recordGap(question: string, userId = null, channel = null, messageTs = null, programId = null) {
+  if (writeContext.suppressed()) return;
   query(
     "INSERT INTO doc_gaps (question, user_id, channel, message_ts, program_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
   ).run(normalizeQuestion(question), userId, channel, messageTs, programId, now());
@@ -934,6 +983,7 @@ function clearTakeover(threadTs: string) {
 }
 
 function recordMetric(kind: string, latencyMs = null, detail = null, programId = null) {
+  if (writeContext.suppressed()) return;
   query("INSERT INTO metrics (kind, latency_ms, detail, program_id, created_at) VALUES (?, ?, ?, ?, ?)").run(
     kind,
     latencyMs,
@@ -944,6 +994,7 @@ function recordMetric(kind: string, latencyMs = null, detail = null, programId =
 }
 
 function recordLlmUsage(entry: Record<string, unknown> = {}) {
+  if (writeContext.suppressed()) return;
   try {
     query(
       `INSERT INTO llm_usage
@@ -1204,6 +1255,7 @@ function countRecentRequests(userId: string, windowMs: number) {
 }
 
 function recordRequest(userId: string) {
+  if (writeContext.suppressed()) return;
   query("INSERT INTO rate_limits (user_id, created_at) VALUES (?, ?)").run(userId, now());
 }
 
@@ -1351,13 +1403,22 @@ function getDbPrograms() {
     ticketVisibility: r.ticket_visibility || null,
     behavior: r.behavior ? safeJson(r.behavior) : null,
     status: r.status || null,
+    lifecycle: ["draft", "testing", "approved", "active", "paused", "archived"].includes(r.lifecycle || "")
+      ? r.lifecycle
+      : r.status === "live"
+        ? "active"
+        : r.status === "paused"
+          ? "paused"
+          : "draft",
+    liveTest: r.live_test === "passed" || r.live_test === "failed" ? r.live_test : "pending",
+    liveTestNote: r.live_test_note || null,
     learning: r.learning === "review" ? "review" : "auto",
     updatedAt: r.updated_at,
   }));
 }
 
 function saveProgram(p: PersistedProgram) {
-  const existing = query("SELECT 1 FROM programs WHERE id = ?").get(p.id);
+  const existing = query<{ lifecycle: string | null }>("SELECT lifecycle FROM programs WHERE id = ?").get(p.id);
   const nowTs = now();
   const channels = p.channels ? JSON.stringify(p.channels) : null;
   const sources = p.sources ? JSON.stringify(p.sources) : null;
@@ -1373,6 +1434,15 @@ function saveProgram(p: PersistedProgram) {
         ? p.behavior
         : null;
   const status = p.status && ["sandbox", "live", "paused"].includes(p.status) ? p.status : null;
+  const lifecycle = existing
+    ? existing.lifecycle || "active"
+    : ["draft", "testing", "approved", "active", "paused", "archived"].includes(p.lifecycle || "")
+      ? p.lifecycle
+      : p.status === "live"
+        ? "active"
+        : p.status === "paused"
+          ? "paused"
+          : "active";
   const learning = p.learning === "review" ? "review" : "auto";
   const sensitive = p.sensitiveCategories ? JSON.stringify(p.sensitiveCategories) : null;
   const VALID_INCIDENT_MODES = ["ANSWER_ONLY", "ANSWER_AND_TRACK", "NORMAL_TICKET"];
@@ -1418,6 +1488,7 @@ function saveProgram(p: PersistedProgram) {
     ticketVisibility,
     behavior,
     status,
+    lifecycle,
     learning,
     nowTs,
   ];
@@ -1431,7 +1502,7 @@ function saveProgram(p: PersistedProgram) {
          sla_unassigned_ms = ?, sla_assigned_ms = ?, sla_waiting_ms = ?, sla_target_ms = ?, sla_notify_channel = ?,
          retention_context_days = ?, retention_tickets_days = ?, retention_notes_days = ?, retention_traces_days = ?, retention_analytics_days = ?, retention_audit_days = ?,
          help_channel = ?, channels = ?, helper_group = ?,
-         sources = ?, milestones = ?, guides = ?, links = ?, categories = ?, ticket_visibility = ?, behavior = ?, status = ?, learning = ?, updated_at = ? WHERE id = ?`,
+         sources = ?, milestones = ?, guides = ?, links = ?, categories = ?, ticket_visibility = ?, behavior = ?, status = ?, lifecycle = ?, learning = ?, updated_at = ? WHERE id = ?`,
     ).run(...values, p.id);
   } else {
     query(
@@ -1439,8 +1510,8 @@ function saveProgram(p: PersistedProgram) {
          ai_answers, tickets_enabled, auto_escalate, sensitive_categories, support_active, auto_assign, helper_ping_enabled, shadow_mode, incident_mode, public_tickets_enabled,
          sla_unassigned_ms, sla_assigned_ms, sla_waiting_ms, sla_target_ms, sla_notify_channel,
          retention_context_days, retention_tickets_days, retention_notes_days, retention_traces_days, retention_analytics_days, retention_audit_days,
-         help_channel, channels, helper_group, sources, milestones, guides, links, categories, ticket_visibility, behavior, status, learning, updated_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         help_channel, channels, helper_group, sources, milestones, guides, links, categories, ticket_visibility, behavior, status, lifecycle, learning, updated_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(p.id, ...values, nowTs);
   }
 }

@@ -27,6 +27,8 @@ create table if not exists hosted_programs (
     check (deployment_mode = 'hosted_shared'),
   status text not null default 'active'
     check (status in ('active', 'suspended', 'archived')),
+  lifecycle text not null default 'draft'
+    check (lifecycle in ('draft', 'testing', 'approved', 'active', 'paused', 'archived')),
   ai_answers boolean not null default true,
   tickets_enabled boolean not null default true,
   auto_escalate boolean not null default true,
@@ -63,6 +65,10 @@ create index if not exists hosted_programs_owner_idx
 -- pattern above for why this is a separate alter, not part of the create.
 alter table hosted_programs add column if not exists incident_mode text not null default 'ANSWER_AND_TRACK'
   check (incident_mode in ('ANSWER_ONLY', 'ANSWER_AND_TRACK', 'NORMAL_TICKET'));
+
+alter table hosted_programs add column if not exists lifecycle text not null default 'draft'
+  check (lifecycle in ('draft', 'testing', 'approved', 'active', 'paused', 'archived'));
+
 
 -- Mirrors Core's programs.public_tickets_enabled (lib/schema.js): an
 -- independent kill switch for auto-opening tickets from this program's
@@ -175,4 +181,5 @@ create table if not exists wizard_global_access (
 alter table hosted_programs add column if not exists behavior jsonb not null default '{}'::jsonb;
 alter table hosted_programs add column if not exists runtime_status text not null default 'sandbox'
   check (runtime_status in ('sandbox', 'live', 'paused'));
+
 alter table hosted_program_helpers add column if not exists eligible_for_pings boolean not null default true;

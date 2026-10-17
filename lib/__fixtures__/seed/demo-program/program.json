@@ -1,0 +1,40 @@
+{
+  "id": "demo-program",
+  "name": "Demo Program",
+  "supportName": "Demo Help",
+  "posture": "active",
+  "channels": {
+    "help": "C0DEMOHELP1",
+    "organizer": "C0DEMOORG01",
+    "main": [
+      "C0DEMOMAIN1"
+    ]
+  },
+  "sources": [
+    {
+      "name": "Demo Site",
+      "type": "web",
+      "url": "https://demo.example.com/"
+    },
+    {
+      "name": "Demo Repo",
+      "type": "github-repo",
+      "url": "https://github.com/example/demo"
+    }
+  ],
+  "instructions": {
+    "mayAnswer": [
+      "How the demo works."
+    ],
+    "mustEscalate": [
+      "Anything about a specific account."
+    ],
+    "neverDo": [
+      "Never invent a deadline."
+    ]
+  },
+  "settings": {
+    "ticketsEnabled": false,
+    "helperPing": true
+  }
+}

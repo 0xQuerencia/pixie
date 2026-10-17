@@ -670,6 +670,111 @@ async function handleApi(req: Request): Promise<Response | null> {
       const res = api.internalProgramSync(progSync[1], body);
       return json(res, res.error ? res.status || 400 : 200);
     }
+    const programInspect = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/inspect$/);
+    if (programInspect && method === "POST") {
+      const res = await api.internalProgramInspect(decodeURIComponent(programInspect[1]), body);
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : res.status || 400) : 200);
+    }
+    const programDocs = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/docs$/);
+    if (programDocs && method === "GET") {
+      const res = api.internalProgramDocs(decodeURIComponent(programDocs[1]), url.searchParams.get("section"));
+      return json(res, res.error === "unknown program" ? 404 : res.error ? 400 : 200);
+    }
+    if (programDocs && method === "PUT") {
+      const res = api.internalProgramDocUpsert(decodeURIComponent(programDocs[1]), null, body);
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : res.status || 400) : 200);
+    }
+    const programDoc = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/docs\/(\d+)$/);
+    if (programDoc && method === "GET") {
+      const res = api.internalProgramDoc(decodeURIComponent(programDoc[1]), Number(programDoc[2]));
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : 404) : 200);
+    }
+    if (programDoc && method === "PUT") {
+      const res = api.internalProgramDocUpsert(decodeURIComponent(programDoc[1]), Number(programDoc[2]), body);
+      return json(
+        res,
+        res.error
+          ? res.error === "unknown program"
+            ? 404
+            : res.error === "document not found"
+              ? 404
+              : res.status || 400
+          : 200,
+      );
+    }
+    if (programDoc && method === "DELETE") {
+      const res = api.internalProgramDocDelete(decodeURIComponent(programDoc[1]), Number(programDoc[2]));
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : 404) : 200);
+    }
+    const supersedeDoc = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/docs\/(\d+)\/supersede$/);
+    if (supersedeDoc && method === "POST") {
+      const res = api.internalProgramDocSupersede(decodeURIComponent(supersedeDoc[1]), Number(supersedeDoc[2]), body);
+      return json(
+        res,
+        res.error
+          ? res.error === "unknown program"
+            ? 404
+            : res.error === "document not found"
+              ? 404
+              : res.status || 400
+          : 200,
+      );
+    }
+    const evalCases = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/eval\/cases$/);
+    if (evalCases && method === "GET") {
+      const res = api.internalProgramEvalCases(decodeURIComponent(evalCases[1]));
+      return json(res, res.error === "unknown program" ? 404 : res.error ? 400 : 200);
+    }
+    if (evalCases && method === "POST") {
+      const res = api.internalProgramEvalCaseCreate(decodeURIComponent(evalCases[1]), body);
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : res.status || 400) : 200);
+    }
+    const evalCase = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/eval\/cases\/(\d+)$/);
+    if (evalCase && method === "DELETE") {
+      const res = api.internalProgramEvalCaseDelete(decodeURIComponent(evalCase[1]), Number(evalCase[2]));
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : 404) : 200);
+    }
+    const evalRun = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/eval\/run$/);
+    if (evalRun && method === "POST") {
+      const res = await api.internalProgramEvalRun(decodeURIComponent(evalRun[1]), body);
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : res.status || 400) : 200);
+    }
+    const evalRuns = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/eval\/runs$/);
+    if (evalRuns && method === "GET") {
+      const res = api.internalProgramEvalRuns(decodeURIComponent(evalRuns[1]), url.searchParams.get("limit"));
+      return json(res, res.error === "unknown program" ? 404 : res.error ? 400 : 200);
+    }
+    const programLifecycle = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/lifecycle$/);
+    if (programLifecycle && method === "POST") {
+      const res = api.internalProgramLifecycle(decodeURIComponent(programLifecycle[1]), body);
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : res.status || 400) : 200);
+    }
+    const programLiveTest = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/live-test$/);
+    if (programLiveTest && method === "POST") {
+      const res = api.internalProgramLiveTest(decodeURIComponent(programLiveTest[1]), body);
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : res.status || 400) : 200);
+    }
+    const programPurge = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/purge$/);
+    if (programPurge && method === "POST") {
+      const res = api.internalProgramPurge(decodeURIComponent(programPurge[1]), body);
+      return json(res, res.error ? (res.error === "unknown program" ? 404 : res.status || 400) : 200);
+    }
+    const programTraces = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/traces$/);
+    if (programTraces && method === "GET") {
+      const res = api.internalProgramTraces(
+        decodeURIComponent(programTraces[1]),
+        Object.fromEntries(url.searchParams.entries()),
+      );
+      return json(res, res.error === "unknown program" ? 404 : res.error ? 400 : 200);
+    }
+    const programTrace = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/traces\/(\d+)$/);
+    if (programTrace && method === "GET") {
+      const res = api.internalProgramTrace(decodeURIComponent(programTrace[1]), Number(programTrace[2]));
+      return json(
+        res,
+        res.error === "unknown program" || res.error === "trace not found" ? 404 : res.error ? 400 : 200,
+      );
+    }
     const testQuestion = url.pathname.match(/^\/internal\/v1\/programs\/([A-Za-z0-9-]+)\/test-question$/);
     if (testQuestion && method === "POST") {
       const res = await api.internalTestQuestion(decodeURIComponent(testQuestion[1]), body);

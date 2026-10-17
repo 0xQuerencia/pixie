@@ -68,14 +68,18 @@ function countRows(db: any): Record<string, number> {
 
 function seedPrograms(fixture: E2eFixture, db: any, programs: any, knowledge: any) {
   for (const [id, spec] of Object.entries(fixture.programs)) {
+    const workspaceId = spec.workspaceId || `W-${id}`;
     db.saveProgram({
       id,
       name: spec.name || id,
-      workspaceId: spec.workspaceId || `W-${id}`,
+      workspaceId,
       helpChannel: `C-${id}`,
       channels: [`C-${id}`],
+      status: "live",
+      lifecycle: "active",
       sources: spec.sources,
     });
+    db.claimProgramChannel({ workspaceId, channelId: `C-${id}`, programId: id, kind: "help" });
     for (const source of spec.sources)
       db.saveSourceText(knowledge.sourceCacheKey(source) || source.name, source.content);
   }
@@ -170,6 +174,7 @@ async function runCase(item: E2eCase, fixture: E2eFixture): Promise<E2eResult> {
       await require("./respond").respond({
         client,
         channel: `C-${item.program}`,
+        workspaceId: fixture.programs[item.program]?.workspaceId || `W-${item.program}`,
         threadTs: `eval-thread-${item.name.length}`,
         userId: USER_ID,
         question: item.question,
