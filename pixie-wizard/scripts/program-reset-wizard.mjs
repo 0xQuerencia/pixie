@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { checkResetGuards, databaseFingerprint } from "../lib/resetGuards.ts";
 
@@ -168,7 +169,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`wizard program reset refused: ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`wizard program reset refused: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}
+
+export { RESET_TABLES, counts, existingTables, snapshot };
