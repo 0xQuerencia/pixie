@@ -304,11 +304,26 @@ test("/pixie ask parity — docs hit answers ephemerally, miss chats, error fall
     respond.lookupAnswer = async () => null;
     chat.getChatReply = async () => "chat reply here";
     await commands.askCommand({
-      command: { text: "hey pixie", user_id: "U1", channel_id: "C1" },
+      command: { text: "hey pixie", user_id: "U1", channel_id: "C-NOBODY" },
       ack: async () => {},
       respond: sendEphemeral,
     });
     assert.match(sent[0].text, /chat reply here/);
+
+    sent.length = 0;
+    let chatCalls = 0;
+    chat.getChatReply = async () => {
+      chatCalls += 1;
+      return "ungrounded program chat";
+    };
+    await commands.askCommand({
+      command: { text: "what is the payout", user_id: "U1", channel_id: "C1" },
+      ack: async () => {},
+      respond: sendEphemeral,
+    });
+    assert.equal(chatCalls, 0, "a program miss never falls through to ungrounded chat");
+    assert.doesNotMatch(sent[0].text, /ungrounded program chat/);
+    assert.match(sent[0].text, /not totally sure/);
 
     sent.length = 0;
     respond.lookupAnswer = async () => {
@@ -381,3 +396,31 @@ test("/pixie-check dispatches to the deterministic path", async () => {
   }
 });
 export {};
+
+test("/pixie ask withholds a grounded answer when its decision trace cannot be written", async () => {
+  const respond = require("./respond");
+  const traceStore = require("./pipeline/traceStore");
+  const { config } = require("./config");
+  const sent: any[] = [];
+  const origLookup = respond.lookupAnswer;
+  const origAppend = traceStore.append;
+  const savedFaq = config.slack.faqChannels;
+  config.slack.faqChannels = [...(savedFaq || []), "C1"];
+  try {
+    respond.lookupAnswer = async () => ({ source: "Docs", answer: "docs answer here" });
+    traceStore.append = () => {
+      throw new Error("trace db down");
+    };
+    await commands.askCommand({
+      command: { text: "how do i join", user_id: "U1", channel_id: "C1" },
+      ack: async () => {},
+      respond: async (m: any) => sent.push(m),
+    });
+    assert.equal(sent.length, 1);
+    assert.doesNotMatch(sent[0].text, /docs answer here/);
+  } finally {
+    respond.lookupAnswer = origLookup;
+    traceStore.append = origAppend;
+    config.slack.faqChannels = savedFaq;
+  }
+});

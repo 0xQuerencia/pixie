@@ -601,7 +601,7 @@ test("grounding traces contain only verdict claims and selected evidence metadat
       const rows = traceStore.forThread(programId, "t-trace-gated");
       const grounding = rows.find((row: { stage: string }) => row.stage === "grounding");
       const selected = rows.find((row: { stage: string }) => row.stage === "selected_evidence");
-      assert.deepEqual(Object.keys(grounding?.payload || {}).sort(), ["claims", "verdict"]);
+      assert.deepEqual(Object.keys(grounding?.payload || {}).sort(), ["claims", "errors", "sendable", "verdict"]);
       assert.ok((grounding?.payload.claims || []).length > 0);
       assert.deepEqual(Object.keys(selected?.payload || {}).sort(), ["evidence", "evidenceIds"]);
     });
@@ -1651,7 +1651,10 @@ test("rate-limit notice failure still records one metric and final trace", async
   const finalAction = traceStore
     .forThread(program.id, threadTs)
     .find((row: { stage: string }) => row.stage === "final_action");
-  assert.deepEqual(finalAction?.payload, { action: "silence", reason: "rate_limited", decision: "ignored" });
+  assert.equal(finalAction?.payload.action, "silence");
+  assert.equal(finalAction?.payload.reason, "rate_limited");
+  assert.equal(finalAction?.payload.decision, "ignored");
+  assert.equal(finalAction?.payload.sent, false);
 });
 
 test("same-thread turns serialize before the next provider call or placeholder", async () => {

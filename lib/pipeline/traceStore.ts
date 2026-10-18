@@ -29,6 +29,8 @@ const MAX_TEXT_CHARS = 1200;
 const MAX_LIST_ITEMS = 30;
 const KNOWN_STAGES = new Set([
   "engagement",
+  "context",
+  "generation",
   "intent",
   "retrieval",
   "selected_evidence",
@@ -130,6 +132,15 @@ function putStrings(
   out[key] = stringList(input[key], maxItems);
 }
 
+function normalizedJev(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  const out: Record<string, unknown> = {};
+  for (const key of ["action", "reason", "decision", "status"]) putString(out, value, key, 120);
+  for (const key of ["probability", "latencyMs", "risk"]) putNumber(out, value, key);
+  putBoolean(out, value, "cached");
+  return Object.keys(out).length ? out : null;
+}
+
 function normalizedScores(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   const out: Record<string, unknown> = {};
@@ -187,6 +198,10 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
 
   if (stage === "grounding") {
     out.verdict = stringValue(input.verdict, 80) || "unknown";
+    putBoolean(out, input, "sendable");
+    putStrings(out, input, "errors", 20);
+    const jev = normalizedJev(input.jev);
+    if (jev) out.jev = jev;
     const claims = normalizedClaims(input.claims);
     const legacy = Array.isArray(input.unsupported) ? normalizedClaims(input.unsupported) : [];
     out.claims = claims.length ? claims : legacy;
@@ -196,6 +211,23 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
   if (stage === "engagement") {
     for (const key of ["role", "intent", "classifier", "classifierError"]) putString(out, input, key, 240);
     for (const key of ["addressed", "engaged"]) putBoolean(out, input, key);
+    putString(out, input, "program", 120);
+    const jev = normalizedJev(input.jev);
+    if (jev) out.jev = jev;
+    return out;
+  }
+
+  if (stage === "context") {
+    for (const key of ["scope", "question"]) putString(out, input, key, 300);
+    for (const key of ["threadChars", "classifierContextChars", "recentChannelMessages", "recentChannelLimit"])
+      putNumber(out, input, key);
+    return out;
+  }
+
+  if (stage === "generation") {
+    for (const key of ["model", "router", "source"]) putString(out, input, key, 200);
+    for (const key of ["latencyMs", "answerChars"]) putNumber(out, input, key);
+    putBoolean(out, input, "unclear");
     return out;
   }
 
@@ -236,6 +268,8 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
 
   if (stage === "final" || stage === "final_action") {
     for (const key of ["action", "finalAction", "reason"]) putString(out, input, key, 240);
+    putBoolean(out, input, "sent");
+    putNumber(out, input, "latencyMs");
     out.decision = canonicalDecision(input.action || input.finalAction) || "unknown";
     return out;
   }

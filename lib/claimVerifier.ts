@@ -1,6 +1,6 @@
 const llm = require("./llm");
 const { config } = require("./config");
-import type { AnswerVerification, ClaimEvidence, VerifiedClaim } from "./types";
+import type { AnswerVerification, ClaimEvidence, JevAnswerCheck, VerifiedClaim } from "./types";
 
 type JudgeClaim = {
   claim: string;
@@ -23,6 +23,10 @@ interface VerifyInput {
   answer: string;
   evidence?: ClaimEvidence[];
   judge?: Judge | null;
+  question?: string;
+  context?: string;
+  programName?: string;
+  jevCheck?: ((input: Record<string, unknown>) => Promise<JevAnswerCheck>) | null;
   allowFixtures?: boolean;
   fixtureClaims?: unknown[];
 }
@@ -811,9 +815,68 @@ async function applyJudge(base: AnswerVerification, input: VerifyInput): Promise
   };
 }
 
+async function jevPostCheck(
+  base: AnswerVerification,
+  input: VerifyInput,
+): Promise<{ ok: boolean; error?: string; check?: JevAnswerCheck }> {
+  const mode = process.env.PIXIE_JEV_POSTCHECK;
+  // Independent of PIXIE_CLAIM_JUDGE, which only controls the claim judge
+  if (mode === "off") return { ok: true };
+  const jev = require("./jevAnswerCheck");
+  // "required": a missing or disabled Jev blocks the send instead of skipping the check
+  const unavailable = mode === "required" ? { ok: false, error: "jev_postcheck_unavailable" } : { ok: true };
+  let run = input.jevCheck;
+  if (run === undefined) {
+    // Injected judges isolate tests, but never when the check is required
+    if (input.judge !== undefined && mode !== "required") return { ok: true };
+    if (!require("./jevDecision").isEnabled()) return unavailable;
+    run = (payload) => jev.checkAnswer(payload);
+  }
+  if (!run) return { ok: true };
+  let check: JevAnswerCheck;
+  try {
+    check = await run({
+      question: input.question,
+      context: input.context,
+      programId: input.programId,
+      programName: input.programName,
+      answer: input.answer,
+      evidence: Array.isArray(input.evidence) ? input.evidence : [],
+      claims: base.claims,
+    });
+  } catch (_) {
+    return { ok: false, error: "jev_postcheck_error" };
+  }
+  if (check.status === "disabled") return unavailable;
+  if (check.status !== "ok") return { ok: false, error: "jev_postcheck_error", check };
+  if (check.decision !== "answer") return { ok: false, error: `jev_${check.decision}`, check };
+  if (!jev.sendable(check)) return { ok: false, error: "jev_unsupported", check };
+  return { ok: true, check };
+}
+
 async function verifyAnswer(input: VerifyInput): Promise<AnswerVerification> {
   const base = deterministicVerify(input);
-  return applyJudge(base, input);
+  if (!base.sendable || base.claims.length === 0) return base;
+  const [primary, jevResult] = await Promise.all([applyJudge(base, input), jevPostCheck(base, input)]);
+  const jevDetail = jevResult.check
+    ? {
+        jev: {
+          decision: jevResult.check.decision,
+          risk: jevResult.check.risk,
+          reason: jevResult.check.reason,
+          status: jevResult.check.status,
+          latencyMs: jevResult.check.latencyMs,
+        },
+      }
+    : {};
+  if (jevResult.ok || !primary.sendable) return { ...primary, ...jevDetail };
+  return {
+    ...primary,
+    ...jevDetail,
+    verdict: "unsupported",
+    sendable: false,
+    errors: [...new Set([...primary.errors, jevResult.error || "jev_postcheck_error"])],
+  };
 }
 
 function verifyAnswerSync(input: VerifyInput): AnswerVerification {

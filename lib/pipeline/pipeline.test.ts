@@ -409,7 +409,7 @@ test("addressed: program questions never use web search", async () => {
   expect(answerCalls[0].allowWebSearch).toBe(false);
 });
 
-test("addressed: classifier outage still answers, docs or not", async () => {
+test("addressed: classifier outage answers only what the docs support", async () => {
   jevMode = "error";
   expect(await send({ channel: "C_ACME_MAIN", text: "what is restoration energy?", addressed: true })).toBe(true);
   expect(postedText()).toContain("Restoration Energy");
@@ -417,8 +417,8 @@ test("addressed: classifier outage still answers, docs or not", async () => {
   expect(await send({ channel: "C_ACME_MAIN", text: "give me a chocolate chip cookie recipe", addressed: true })).toBe(
     true,
   );
-  expect(postedText()).toContain("bake at 180C");
-  expect(postedText()).not.toMatch(/couldn't verify/i);
+  expect(postedText()).not.toContain("bake at 180C");
+  expect(postedText()).toMatch(/couldn't verify/i);
 });
 
 test("addressed: 'who are you' needs no classifier call", async () => {

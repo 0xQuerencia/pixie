@@ -431,7 +431,7 @@ async function applyGroundingBoundaryAsync(
   question = "",
   corpus = "",
   evidence: ClaimEvidence[] = [],
-  { allowUngroundedChat = false }: { allowUngroundedChat?: boolean } = {},
+  { allowUngroundedChat = false, context = "" }: { allowUngroundedChat?: boolean; context?: string } = {},
 ) {
   if (!result) return result;
   const programId = idOf(prog);
@@ -442,6 +442,9 @@ async function applyGroundingBoundaryAsync(
     programId: programId || "shared",
     answer: result.answer || "",
     evidence: orderedEvidence,
+    question,
+    context,
+    programName: typeof prog === "object" && prog ? String(prog.name || "") : "",
   });
   const enriched = { ...result, evidence, verification: checked };
   const source = configuredSource(result, prog);
@@ -550,7 +553,9 @@ async function lookupAnswer(
   const staged = await runCodeStages(question);
   if (staged) {
     const stagedDetails = selectedContext(retrievalQuery(question, contextPrompt, prog), programId);
-    return applyGroundingBoundaryAsync(staged, prog, question, stagedDetails.context, stagedDetails.evidence);
+    return applyGroundingBoundaryAsync(staged, prog, question, stagedDetails.context, stagedDetails.evidence, {
+      context: contextPrompt,
+    });
   }
 
   const query = retrievalQuery(question, contextPrompt, prog);
@@ -558,14 +563,18 @@ async function lookupAnswer(
   const corpus = details.context;
   let result = await answer.getGroundedAnswer(question, corpus, contextPrompt, prog, channel, { isPing });
   if (result) {
-    result = await applyGroundingBoundaryAsync(result, prog, question, corpus, details.evidence);
+    result = await applyGroundingBoundaryAsync(result, prog, question, corpus, details.evidence, {
+      context: contextPrompt,
+    });
   }
   if (result) {
     if (!contextPrompt && !skipCache && result.verification?.sendable) cache.put(question, result, cacheScope(prog));
     return result;
   }
   const direct = dateFallback(question, contextPrompt, prog);
-  const checkedDirect = await applyGroundingBoundaryAsync(direct, prog, question, corpus, details.evidence);
+  const checkedDirect = await applyGroundingBoundaryAsync(direct, prog, question, corpus, details.evidence, {
+    context: contextPrompt,
+  });
   if (checkedDirect && !contextPrompt && !skipCache && checkedDirect.verification?.sendable)
     cache.put(question, checkedDirect, cacheScope(prog));
   return checkedDirect;
@@ -596,6 +605,7 @@ async function answerOrChat(
     const stagedDetails = selectedContext(retrievalQuery(question, contextPrompt, prog), programId);
     return applyGroundingBoundaryAsync(staged, prog, question, stagedDetails.context, stagedDetails.evidence, {
       allowUngroundedChat: kind === "general",
+      context: contextPrompt,
     });
   }
 
@@ -637,6 +647,7 @@ async function answerOrChat(
 
   result = await applyGroundingBoundaryAsync(result, prog, question, corpus, details.evidence, {
     allowUngroundedChat: kind === "general",
+    context: contextPrompt,
   });
   if (result?.source && !contextPrompt && !skipCache && !hasAnswerOnlyContext && result.verification?.sendable)
     cache.put(question, result, cacheScope(prog));
