@@ -20,7 +20,9 @@ const tickets = require("../tickets");
 const context = require("../context");
 const respond = require("../respond");
 const claimVerifier = require("../claimVerifier");
+const jevAnswerCheck = require("../jevAnswerCheck");
 const traceStore = require("./traceStore");
+const realTraceAppend = traceStore.append;
 
 type Rec = Record<string, unknown>;
 const saved: Array<[Rec, string, unknown]> = [];
@@ -116,6 +118,7 @@ beforeEach(() => {
     shouldEngageP: 0.93,
     latencyMs: 41,
   };
+  traceStore.append = realTraceAppend;
   stub(jevDecision, "isEnabled", () => true);
   stub(jevDecision, "evaluateSupportDecision", async (args: Rec) => {
     jevCalls.push(args);
@@ -250,7 +253,7 @@ test("no usable retrieval: abstains instead of answering from model knowledge", 
 });
 
 test("no complete trace, no send: a failed decision trace withholds the reply", async () => {
-  const original = traceStore.append;
+  const original = realTraceAppend;
   stub(traceStore, "append", (input: { stage: string }) => {
     if (input.stage === "decision") throw new Error("trace db down");
     return original(input);
@@ -284,7 +287,7 @@ test("a duplicate delivery is claimed once, so the second event is dropped befor
 
 test("cache reply: the decision trace is written before the Slack post", async () => {
   const events: string[] = [];
-  const original = traceStore.append;
+  const original = realTraceAppend;
   stub(traceStore, "append", (input: { stage: string }) => {
     events.push(`trace:${input.stage}`);
     return original(input);
@@ -318,7 +321,7 @@ test("cache reply: the decision trace is written before the Slack post", async (
 });
 
 test("cache reply: a failed decision trace withholds the cached answer too", async () => {
-  const original = traceStore.append;
+  const original = realTraceAppend;
   stub(traceStore, "append", (input: { stage: string }) => {
     if (input.stage === "decision") throw new Error("trace db down");
     return original(input);
@@ -354,6 +357,74 @@ test("a message with no program still gets a persisted trace", async () => {
   });
   const rows = traceStore.forThread("shared", ts);
   expect(rows.some((row: { stage: string }) => row.stage === "final_action")).toBe(true);
+});
+
+async function verifiedViaRealVerifier() {
+  const answer = "Grants can be returned before activation.";
+  const evidence = [
+    { id: "d1", programId: "acme", sourceName: "Docs", text: DOCS, authority: "source", kind: "source" },
+  ];
+  const verification = await claimVerifier.verifyAnswer({
+    programId: "acme",
+    answer,
+    evidence,
+    question: "can i return my grant?",
+  });
+  return { answer, source: "Docs", evidence, verification };
+}
+
+for (const status of ["error", "disabled"]) {
+  test(`Jev post-check required and ${status} (claim judge off): nothing is sent to Slack`, async () => {
+    const saved = { judge: process.env.PIXIE_CLAIM_JUDGE, mode: process.env.PIXIE_JEV_POSTCHECK };
+    process.env.PIXIE_CLAIM_JUDGE = "off";
+    process.env.PIXIE_JEV_POSTCHECK = "required";
+    stub(jevAnswerCheck, "checkAnswer", async () => ({
+      status,
+      decision: null,
+      risk: null,
+      reason: "jev_down",
+      errorKind: status === "error" ? "timeout" : null,
+      latencyMs: 3,
+    }));
+    answerImpl = verifiedViaRealVerifier;
+    try {
+      const { spoke, threadTs } = await send({ text: "can i return my grant?", addressed: true });
+      expect(texts()).not.toContain("returned before activation");
+      expect(spoke).toBe(true);
+      expect(stage(threadTs, "grounding").sendable).toBe(false);
+      expect(stage(threadTs, "final_action").decision).not.toBe("answer");
+    } finally {
+      for (const [key, value] of [
+        ["PIXIE_CLAIM_JUDGE", saved.judge],
+        ["PIXIE_JEV_POSTCHECK", saved.mode],
+      ] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+}
+
+test("claim judge off + default Jev: an approving Jev still lets the answer through once", async () => {
+  const saved = process.env.PIXIE_CLAIM_JUDGE;
+  process.env.PIXIE_CLAIM_JUDGE = "off";
+  stub(jevAnswerCheck, "checkAnswer", async () => ({
+    status: "ok",
+    decision: "answer",
+    risk: 1,
+    reason: "jev_supported",
+    errorKind: null,
+    latencyMs: 4,
+  }));
+  answerImpl = verifiedViaRealVerifier;
+  try {
+    const { threadTs } = await send({ text: "can i return my grant?" });
+    expect(posts).toHaveLength(1);
+    expect(stage(threadTs, "grounding").jev.decision).toBe("answer");
+  } finally {
+    if (saved === undefined) delete process.env.PIXIE_CLAIM_JUDGE;
+    else process.env.PIXIE_CLAIM_JUDGE = saved;
+  }
 });
 
 export {};

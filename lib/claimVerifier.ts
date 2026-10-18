@@ -820,14 +820,15 @@ async function jevPostCheck(
   input: VerifyInput,
 ): Promise<{ ok: boolean; error?: string; check?: JevAnswerCheck }> {
   const mode = process.env.PIXIE_JEV_POSTCHECK;
-  if (mode === "off" || process.env.PIXIE_CLAIM_JUDGE === "off") return { ok: true };
+  // Independent of PIXIE_CLAIM_JUDGE, which only controls the claim judge
+  if (mode === "off") return { ok: true };
   const jev = require("./jevAnswerCheck");
   // "required": a missing or disabled Jev blocks the send instead of skipping the check
   const unavailable = mode === "required" ? { ok: false, error: "jev_postcheck_unavailable" } : { ok: true };
   let run = input.jevCheck;
   if (run === undefined) {
-    // Injected judges isolate tests
-    if (input.judge !== undefined) return { ok: true };
+    // Injected judges isolate tests, but never when the check is required
+    if (input.judge !== undefined && mode !== "required") return { ok: true };
     if (!require("./jevDecision").isEnabled()) return unavailable;
     run = (payload) => jev.checkAnswer(payload);
   }

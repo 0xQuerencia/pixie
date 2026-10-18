@@ -442,3 +442,127 @@ test("PIXIE_JEV_POSTCHECK=required blocks when Jev is unavailable, off skips the
     else process.env.PIXIE_JEV_POSTCHECK = saved;
   }
 });
+
+async function withEnv<T>(env: Record<string, string | undefined>, run: () => Promise<T>) {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of Object.keys(env)) {
+    saved[key] = process.env[key];
+    if (env[key] === undefined) delete process.env[key];
+    else process.env[key] = env[key];
+  }
+  try {
+    return await run();
+  } finally {
+    for (const key of Object.keys(saved)) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+}
+
+test("claim judge off + Jev required: Jev still runs and can block", async () => {
+  await withEnv({ PIXIE_CLAIM_JUDGE: "off", PIXIE_JEV_POSTCHECK: "required" }, async () => {
+    let calls = 0;
+    const blocked = await claimVerifier.verifyAnswer(
+      jevBase({
+        jevCheck: async () => {
+          calls += 1;
+          return jevOk({ decision: "escalate" });
+        },
+      }),
+    );
+    assert.equal(calls, 1);
+    assert.equal(blocked.sendable, false);
+    assert.ok(blocked.errors.includes("jev_escalate"));
+  });
+});
+
+test("claim judge off + Jev enabled by default: Jev runs through the default path", async () => {
+  const jevDecision = require("./jevDecision");
+  const jevAnswerCheck = require("./jevAnswerCheck");
+  const originalEnabled = jevDecision.isEnabled;
+  const originalCheck = jevAnswerCheck.checkAnswer;
+  let calls = 0;
+  jevDecision.isEnabled = () => true;
+  jevAnswerCheck.checkAnswer = async () => {
+    calls += 1;
+    return jevOk({ decision: "clarify" });
+  };
+  try {
+    await withEnv({ PIXIE_CLAIM_JUDGE: "off", PIXIE_JEV_POSTCHECK: undefined }, async () => {
+      const result = await claimVerifier.verifyAnswer({
+        programId: "program-a",
+        answer: jevAnswer,
+        evidence: [sourceEvidence(jevAnswer)],
+      });
+      assert.equal(calls, 1);
+      assert.equal(result.sendable, false);
+      assert.ok(result.errors.includes("jev_clarify"));
+    });
+  } finally {
+    jevDecision.isEnabled = originalEnabled;
+    jevAnswerCheck.checkAnswer = originalCheck;
+  }
+});
+
+test("Jev post-check off disables only the Jev layer; the claim judge still applies", async () => {
+  await withEnv({ PIXIE_CLAIM_JUDGE: undefined, PIXIE_JEV_POSTCHECK: "off" }, async () => {
+    let jevCalls = 0;
+    const jevCheck = async () => {
+      jevCalls += 1;
+      return jevOk({ decision: "escalate" });
+    };
+    const approved = await claimVerifier.verifyAnswer(jevBase({ jevCheck }));
+    assert.equal(approved.sendable, true);
+    assert.equal(jevCalls, 0);
+    const rejected = await claimVerifier.verifyAnswer(
+      jevBase({ jevCheck, judge: async () => ({ verdict: "unsupported", claims: [] }) }),
+    );
+    assert.equal(rejected.sendable, false);
+    assert.equal(jevCalls, 0);
+  });
+});
+
+test("Jev required with Jev disabled or without a key blocks, even when the claim judge is off", async () => {
+  const jevDecision = require("./jevDecision");
+  const original = jevDecision.isEnabled;
+  jevDecision.isEnabled = () => false;
+  try {
+    await withEnv({ PIXIE_CLAIM_JUDGE: "off", PIXIE_JEV_POSTCHECK: "required" }, async () => {
+      const result = await claimVerifier.verifyAnswer({
+        programId: "program-a",
+        answer: jevAnswer,
+        evidence: [sourceEvidence(jevAnswer)],
+      });
+      assert.equal(result.sendable, false);
+      assert.ok(result.errors.includes("jev_postcheck_unavailable"));
+      const withInjectedJudge = await claimVerifier.verifyAnswer(jevBase({}));
+      assert.equal(withInjectedJudge.sendable, false, "an injected judge does not bypass required");
+    });
+    await withEnv({ PIXIE_CLAIM_JUDGE: undefined, PIXIE_JEV_POSTCHECK: undefined }, async () => {
+      const result = await claimVerifier.verifyAnswer(jevBase({}));
+      assert.equal(result.sendable, true, "default keeps the current behavior when Jev is not configured");
+    });
+  } finally {
+    jevDecision.isEnabled = original;
+  }
+});
+
+test("only turning both layers off explicitly disables model verification", async () => {
+  const rejectJudge = async () => ({ verdict: "unsupported", claims: [] });
+  const rejectJev = async () => jevOk({ decision: "escalate" });
+  const cases: Array<[string, string | undefined, string | undefined, boolean]> = [
+    ["judge on, jev default", undefined, undefined, false],
+    ["judge off, jev default", "off", undefined, false],
+    ["judge on, jev off", undefined, "off", false],
+    ["judge off, jev required", "off", "required", false],
+    ["judge on, jev required", undefined, "required", false],
+    ["judge off, jev off (explicit)", "off", "off", true],
+  ];
+  for (const [label, claimJudge, jevMode, expected] of cases) {
+    await withEnv({ PIXIE_CLAIM_JUDGE: claimJudge, PIXIE_JEV_POSTCHECK: jevMode }, async () => {
+      const result = await claimVerifier.verifyAnswer(jevBase({ judge: rejectJudge, jevCheck: rejectJev }));
+      assert.equal(result.sendable, expected, label);
+    });
+  }
+});
