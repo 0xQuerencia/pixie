@@ -1,0 +1,37 @@
+{
+  "id": "back-to-basics",
+  "name": "Back to Basics",
+  "description": "Back to Basics (B2B) is a Hack Club YSWS where beginners build software projects, document what they learn in learning journals, and earn coins toward shop rewards.",
+  "supportName": "Pixie",
+  "posture": "active",
+  "channels": {
+    "help": null,
+    "organizer": null,
+    "main": []
+  },
+  "sources": [],
+  "instructions": {
+    "mayAnswer": [
+      "What Back to Basics is, who can join, and how to get started",
+      "Project, GitHub repository, demo link and README expectations as written in the docs",
+      "Hackatime and Lapse tracking, learning journal contents and how journals are evaluated",
+      "Shipping, review and returned-for-changes flow as written in the docs",
+      "Where to ask for help"
+    ],
+    "mustEscalate": [
+      "Anything about a specific submission, review status, flag or rejection",
+      "Exact coin payout rates, grant amounts, shop timing, start dates or deadlines the docs do not state",
+      "Collaboration, team, reused-project or hardware questions the docs leave unresolved",
+      "Anything the official docs do not cover"
+    ],
+    "neverDo": [
+      "Never invent payout rates, dates, deadlines, review timelines or grant rules that are not in the docs",
+      "Never apply another YSWS program's rules to Back to Basics",
+      "Never promise an outcome for a specific submission or account"
+    ]
+  },
+  "links": {},
+  "settings": {
+    "ticketsEnabled": false
+  }
+}

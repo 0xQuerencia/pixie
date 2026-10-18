@@ -184,7 +184,7 @@ function channelClaims(seed: SeedProgram): Array<{ channelId: string; kind: stri
   return claims;
 }
 
-function syncDocs(seed: SeedProgram, dryRun: boolean): SeedResult["docs"] {
+function syncDocs(seed: Pick<SeedProgram, "id" | "docs">, dryRun: boolean): SeedResult["docs"] {
   const counts = { created: 0, updated: 0, unchanged: 0, deactivated: 0 };
   const existing = programDocs.listDocs(seed.id).filter((doc) => doc.updated_by === "seed");
   const wanted = new Set<string>();
@@ -265,4 +265,12 @@ function listProgramDirs(root: string): string[] {
     .sort();
 }
 
-export = { loadProgramDir, apply, listProgramDirs, channelClaims };
+const UNSAFE_DOC = /research\/|source-ledger|unresolved\.md/i;
+
+function unsafeDocReason(doc: Pick<SeedDoc, "body" | "sourceRef" | "file">): string | null {
+  return UNSAFE_DOC.test(doc.body) || UNSAFE_DOC.test(doc.sourceRef || "")
+    ? `${doc.file}: references research material`
+    : null;
+}
+
+export = { loadProgramDir, apply, listProgramDirs, channelClaims, syncDocs, loadDocs, unsafeDocReason };
