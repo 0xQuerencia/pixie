@@ -73,12 +73,17 @@ test("missing provenance keeps legacy mention behavior and DMs are unchanged", (
   });
 });
 
-test("a ping gets the model's answer even when the docs don't cover it", () => {
+test("a program question is never answered from ungrounded model text, even on a ping", () => {
   const base = { settings, addressed: true, kind: "program", grounded: false, hasAnswer: true };
+  assert.equal(finalAction({ ...base, role: "main" }), "uncertain");
+  assert.equal(finalAction({ ...base, role: "dm" }), "uncertain");
+  assert.equal(finalAction({ ...base, role: "help" }), "escalate_and_uncertain");
+  assert.equal(finalAction({ ...base, role: "help", settings: { ...settings, escalateUnknown: false } }), "uncertain");
+});
+
+test("an addressed general chat message still gets a chat reply", () => {
+  const base = { settings, addressed: true, kind: "general", grounded: false, hasAnswer: true };
   assert.equal(finalAction({ ...base, role: "main" }), "reply_chat");
-  assert.equal(finalAction({ ...base, role: "dm" }), "reply_chat");
-  assert.equal(finalAction({ ...base, role: "help" }), "escalate_and_reply_chat");
-  assert.equal(finalAction({ ...base, role: "help", settings: { ...settings, escalateUnknown: false } }), "reply_chat");
 });
 
 test("a ping still admits uncertainty when there is nothing to say, or strict grounding is on", () => {

@@ -135,6 +135,7 @@ function ActionDetails({ payload }: { payload: CoreTracePayload }) {
       {action && <span className="font-mono text-text">{action}</span>}
       {action && reason && " — "}
       {reason}
+      {typeof payload.sent === "boolean" && ` · ${payload.sent ? "sent to Slack" : "not sent"}`}
     </p>
   );
 }
@@ -155,6 +156,16 @@ function BasicDetails({ payload }: { payload: CoreTracePayload }) {
     ["intent", text(payload.intent)],
     ["classifier", text(payload.classifier)],
     ["role", text(payload.role)],
+    ["scope", text(payload.scope)],
+    ["model", text(payload.model)],
+    ["router", text(payload.router)],
+    ["latency", number(payload.latencyMs) === null ? null : `${number(payload.latencyMs)}ms`],
+    ["answer chars", number(payload.answerChars) === null ? null : String(number(payload.answerChars))],
+    [
+      "recent channel msgs",
+      number(payload.recentChannelMessages) === null ? null : String(number(payload.recentChannelMessages)),
+    ],
+    ["jev", text(record(payload.jev)?.reason) ?? text(record(payload.jev)?.action)],
   ].filter((entry): entry is [string, string] => entry[1] !== null);
   return values.length > 0 ? (
     <p className="font-mono text-[12px] text-text-muted">

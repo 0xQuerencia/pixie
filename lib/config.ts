@@ -252,35 +252,42 @@ function nextGroqApiKey() {
 const DEFAULT_PRIMARY_MODEL = "kr/claude-sonnet-4.5";
 const DEFAULT_FALLBACK_MODEL = "ag/gemini-3.6-flash-low";
 
+// Answers stay on Nine Router unless explicitly opened up
+const allowOffRouter = process.env.PIXIE_ANSWER_ALLOW_FALLBACK === "1";
+
 const nineRouterSecondaryFallbackTier = {
   apiKey: () => process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY,
   baseUrl: normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL),
   model: process.env.PIXIE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL,
-  fallback: standbyFallback(normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL), DEFAULT_MODEL),
+  fallback: allowOffRouter
+    ? standbyFallback(normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL), DEFAULT_MODEL)
+    : null,
 };
 
 const nineRouterAnswerTier = {
   apiKey: () => process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY,
   baseUrl: normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL),
   model: process.env.PIXIE_MODEL || DEFAULT_PRIMARY_MODEL,
-  fallback: process.env.OPENROUTER_API_KEY
+  fallback:
+    allowOffRouter && process.env.OPENROUTER_API_KEY
+      ? {
+          apiKey: () => process.env.OPENROUTER_API_KEY,
+          baseUrl: normalizeBaseUrl(process.env.OPENROUTER_BASE_URL, OPENROUTER_BASE_URL),
+          model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
+          fallback: nineRouterSecondaryFallbackTier,
+        }
+      : nineRouterSecondaryFallbackTier,
+};
+
+const openRouterAnswerTier =
+  allowOffRouter && process.env.OPENROUTER_API_KEY
     ? {
         apiKey: () => process.env.OPENROUTER_API_KEY,
         baseUrl: normalizeBaseUrl(process.env.OPENROUTER_BASE_URL, OPENROUTER_BASE_URL),
         model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
-        fallback: nineRouterSecondaryFallbackTier,
+        fallback: nineRouterAnswerTier,
       }
-    : nineRouterSecondaryFallbackTier,
-};
-
-const openRouterAnswerTier = process.env.OPENROUTER_API_KEY
-  ? {
-      apiKey: () => process.env.OPENROUTER_API_KEY,
-      baseUrl: normalizeBaseUrl(process.env.OPENROUTER_BASE_URL, OPENROUTER_BASE_URL),
-      model: process.env.OPENROUTER_MODEL || DEFAULT_OPENROUTER_MODEL,
-      fallback: nineRouterAnswerTier,
-    }
-  : nineRouterAnswerTier;
+    : nineRouterAnswerTier;
 
 const nineRouterPingTier = {
   apiKey: () =>
@@ -313,7 +320,7 @@ const config = {
   pingAnswer: nineRouterPingTier,
   helpAnswer: nineRouterAnswerTier,
   answer:
-    hcaiApiKeys.length > 0
+    process.env.PIXIE_ANSWER_PROVIDER === "hcai" && hcaiApiKeys.length > 0
       ? {
           apiKey: () => nextHcaiApiKey(),
           baseUrl: process.env.HCAI_BASE_URL || HCAI_BASE_URL,

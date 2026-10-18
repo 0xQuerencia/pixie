@@ -610,25 +610,37 @@ async function respondTurn({
   const traceRequestId = `${threadTs}:${startedAt}`;
   let traceTicketId: number | null = null;
   let traceFinished = false;
-  const appendAnswerTrace = (stage: string, payload: Record<string, unknown>) => {
-    if (!programId) return;
+  let sentToSlack = false;
+  const appendAnswerTrace = (stage: string, payload: Record<string, unknown>): boolean => {
     try {
       traceStore.append({
-        programId,
+        programId: programId || "shared",
         ticketId: traceTicketId,
         threadTs,
         requestId: traceRequestId,
         stage,
         payload,
       });
+      return true;
     } catch (error: unknown) {
-      log.debug("respond", `answer trace write failed: ${errorMessage(error)}`);
+      log.warn("respond", `answer trace write failed: ${errorMessage(error)}`);
+      return false;
     }
+  };
+  const publishAndMark = async (args: Parameters<typeof publishReply>[0]) => {
+    const postedTs = await publishReply(args);
+    if (postedTs) sentToSlack = true;
+    return postedTs;
   };
   const finishTrace = (finalAction: string, reason: string) => {
     if (traceFinished) return;
     traceFinished = true;
-    appendAnswerTrace("final_action", { action: finalAction, reason });
+    appendAnswerTrace("final_action", {
+      action: finalAction,
+      reason,
+      sent: sentToSlack,
+      latencyMs: Date.now() - startedAt,
+    });
     trace.finish({ finalAction, reason });
   };
 
@@ -725,6 +737,7 @@ async function respondTurn({
     return true;
   }
 
+  const recentMessages = await recentChannelContext({ seedClient, channel, messageTs, threadTs });
   const engaged = await engagement.classify({
     message: effectiveQuestion,
     threadContext,
@@ -734,13 +747,36 @@ async function respondTurn({
     userId,
     channel,
     threadMessages: context.getThreadMessages(threadTs, 8, channel),
-    recentMessages: await recentChannelContext({ seedClient, channel, messageTs, threadTs }),
+    recentMessages,
   });
   trace.set({
     classifier: engaged.source,
     intent: engaged.intent,
     shouldEngage: engaged.engage,
     providerErrorKind: engaged.error,
+  });
+  const classifierContext = engagement.conversationContextFor({
+    threadContext,
+    recentMessages,
+    userId,
+  });
+  appendAnswerTrace("context", {
+    scope: seedClient && messageTs === threadTs ? "channel+thread" : "thread",
+    threadChars: threadContext ? threadContext.length : 0,
+    classifierContextChars: classifierContext.length,
+    recentChannelMessages: recentMessages.length,
+    recentChannelLimit: RECENT_CHANNEL_CONTEXT,
+    question: effectiveQuestion.slice(0, 300),
+  });
+  appendAnswerTrace("engagement", {
+    role,
+    addressed: isAddressed,
+    intent: engaged.intent,
+    engaged: engaged.engage,
+    classifier: engaged.source,
+    classifierError: engaged.error || null,
+    program: programId,
+    jev: (engaged as { detail?: unknown }).detail || null,
   });
 
   const plan = messagePolicy.planEngagement({
@@ -815,7 +851,7 @@ async function respondTurn({
     if (role === "help" && settings?.escalateUnknown !== false)
       await handOff("Pixie is not configured to answer this program here");
     if (isAddressed) {
-      await publishReply({
+      await publishAndMark({
         silencedBefore,
         client,
         channel,
@@ -847,6 +883,11 @@ async function respondTurn({
     answerOnlyContext,
   });
   if (known && (kind === "general" || isDeterministicAnswer(known) || isGroundedAnswer(known))) {
+    // Trace before the send, like every other reply path
+    if (!appendAnswerTrace("decision", { expectedAction: "reply", reason: "cache" })) {
+      finishTrace("silence", "trace_unavailable");
+      return false;
+    }
     const spoke = await replyFromCache({
       client,
       channel,
@@ -858,7 +899,7 @@ async function respondTurn({
       program: prog,
     });
     if (spoke !== null) {
-      appendAnswerTrace("decision", { expectedAction: spoke ? "reply" : "silence", reason: "cache" });
+      sentToSlack = spoke === true;
       finishTrace(spoke ? "reply" : "silence", "cache");
       return spoke;
     }
@@ -925,7 +966,11 @@ async function respondTurn({
           db.recordMetric("blocked_link", Date.now() - startedAt);
           const blockedMsg =
             "sorry, i can only open public URLs — localhost on your machine isn't reachable from the bot";
-          await reply.finalize(client, channel, threadTs, placeholder(), blockedMsg, { program: prog, silencedBefore });
+          const blockedTs = await reply.finalize(client, channel, threadTs, placeholder(), blockedMsg, {
+            program: prog,
+            silencedBefore,
+          });
+          if (blockedTs) sentToSlack = true;
           lifecycleCompleted = true;
           context.addToThread(threadTs, "assistant", blockedMsg, null, channel);
           finishTrace("reply", "blocked_link");
@@ -961,6 +1006,7 @@ async function respondTurn({
       : null;
 
     let result: AnswerResult | null = null;
+    const generationStartedAt = Date.now();
     try {
       result = await lookup.answerOrChat(effectiveQuestion, contextPrompt, {
         onText,
@@ -1029,15 +1075,18 @@ async function respondTurn({
     const groundingDetails: Record<string, unknown> = result.verification
       ? {
           verdict: result.verification.claims.length > 0 ? result.verification.verdict : "unsupported",
+          sendable: result.verification.sendable === true,
+          errors: result.verification.errors || [],
+          jev: result.verification.jev || null,
           claims: result.verification.claims,
         }
-      : { verdict: "unsupported", claims: [] };
+      : { verdict: "unsupported", sendable: false, errors: [], jev: null, claims: [] };
     trace.set({
       retrievalHit: Boolean(result?.source && result.source.trim().toUpperCase() !== "NONE"),
       groundingPass: grounded,
     });
 
-    const action = messagePolicy.finalAction({
+    let action: string = messagePolicy.finalAction({
       role,
       settings,
       addressed: isAddressed,
@@ -1067,15 +1116,16 @@ async function respondTurn({
     const traceTicket =
       inHelpChannel && !programs.isShadow(prog) ? db.getTicketByThreadTs(threadTs, workspaceId, programId) : null;
     if (traceTicket) traceTicketId = traceTicket.id;
-    appendAnswerTrace("engagement", {
-      role,
-      addressed: isAddressed,
-      intent: engaged.intent,
-      engaged: engaged.engage,
-      classifier: engaged.source,
-      classifierError: engaged.error || null,
-    });
     appendAnswerTrace("retrieval", { question: effectiveQuestion, sources: retrievalDetails });
+    const answerTier = isAddressed && !inHelpChannel ? config.pingAnswer : config.helpAnswer;
+    appendAnswerTrace("generation", {
+      model: answerTier?.model || null,
+      router: answerTier?.baseUrl ? new URL(String(answerTier.baseUrl)).host : null,
+      latencyMs: Date.now() - generationStartedAt,
+      source: result.source || null,
+      answerChars: String(result.answer || "").length,
+      unclear: cannotTell,
+    });
     const evidence = Array.isArray(result.evidence) ? (result.evidence as ClaimEvidence[]) : [];
     appendAnswerTrace("selected_evidence", {
       evidenceIds: evidence.map((item) => String(item.id || "")).filter(Boolean),
@@ -1086,12 +1136,17 @@ async function respondTurn({
       })),
     });
     appendAnswerTrace("grounding", groundingDetails);
-    appendAnswerTrace("decision", { expectedAction: action, reason: plan.reason });
+    const decisionTraced = appendAnswerTrace("decision", { expectedAction: action, reason: plan.reason });
+    if (!decisionTraced && (action === "reply" || action === "reply_chat" || action === "escalate_and_reply_chat")) {
+      // No complete trace, no send
+      log.warn("respond", "decision trace unavailable; withholding reply");
+      action = "escalate";
+    }
 
     if (action === "reply") {
       const text = reply.withReplySignature(`${result.answer}${reply.sourceLineFor(result.source, prog)}`, prog);
       await waitForSeed();
-      await publishReply({
+      await publishAndMark({
         silencedBefore,
         client,
         channel,
@@ -1123,7 +1178,7 @@ async function respondTurn({
         await handOff("chat answer was not verified from program sources", result.source ? [result.source] : []);
       if (threadTs) db.recordAnsweredThread({ question: trimmed, channel, threadTs });
       await waitForSeed();
-      await publishReply({
+      await publishAndMark({
         silencedBefore,
         client,
         channel,
@@ -1157,7 +1212,7 @@ async function respondTurn({
       if (action === "escalate_and_uncertain") {
         const text = uncertaintyText(prog, { escalated: true });
         await waitForSeed();
-        await publishReply({
+        await publishAndMark({
           silencedBefore,
           client,
           channel,
@@ -1190,7 +1245,7 @@ async function respondTurn({
     if (action === "uncertain") {
       const text = uncertaintyText(prog);
       await waitForSeed();
-      await publishReply({
+      await publishAndMark({
         silencedBefore,
         client,
         channel,

@@ -353,3 +353,92 @@ test("answers that restate the docs are still sendable", () => {
   ];
   for (const answer of allowed) assert.equal(sendable(answer, RULES_DOC), true, answer);
 });
+
+const jevAnswer = "The grant can be returned before activation.";
+const jevBase = (extra: object) => ({
+  programId: "program-a",
+  answer: jevAnswer,
+  evidence: [sourceEvidence(jevAnswer)],
+  judge: (input: { claims: Array<{ claim: string }> }) => supportedJudge(input.claims),
+  ...extra,
+});
+
+const jevOk = (extra: object = {}) => ({
+  status: "ok",
+  decision: "answer",
+  risk: 1,
+  reason: "jev_supported",
+  errorKind: null,
+  latencyMs: 12,
+  ...extra,
+});
+
+test("jev post-check approving keeps the answer sendable and records its result", async () => {
+  const result = await claimVerifier.verifyAnswer(jevBase({ jevCheck: async () => jevOk() }));
+  assert.equal(result.sendable, true);
+  assert.equal(result.jev.decision, "answer");
+  assert.equal(result.jev.risk, 1);
+});
+
+test("jev post-check blocks clarify, escalate and ignore decisions", async () => {
+  for (const decision of ["clarify", "escalate", "ignore"]) {
+    const result = await claimVerifier.verifyAnswer(jevBase({ jevCheck: async () => jevOk({ decision, risk: 1 }) }));
+    assert.equal(result.sendable, false, decision);
+    assert.ok(result.errors.includes(`jev_${decision}`), decision);
+  }
+});
+
+test("jev post-check blocks a high-risk support score even when it says answer", async () => {
+  const result = await claimVerifier.verifyAnswer(jevBase({ jevCheck: async () => jevOk({ risk: 4 }) }));
+  assert.equal(result.sendable, false);
+  assert.ok(result.errors.includes("jev_unsupported"));
+});
+
+test("jev post-check errors fail closed", async () => {
+  const errored = await claimVerifier.verifyAnswer(
+    jevBase({ jevCheck: async () => jevOk({ status: "error", decision: null, risk: null, errorKind: "timeout" }) }),
+  );
+  assert.equal(errored.sendable, false);
+  assert.ok(errored.errors.includes("jev_postcheck_error"));
+  const thrown = await claimVerifier.verifyAnswer(
+    jevBase({
+      jevCheck: async () => {
+        throw new Error("boom");
+      },
+    }),
+  );
+  assert.equal(thrown.sendable, false);
+  assert.ok(thrown.errors.includes("jev_postcheck_error"));
+});
+
+test("jev post-check disabled status does not block", async () => {
+  const result = await claimVerifier.verifyAnswer(jevBase({ jevCheck: async () => jevOk({ status: "disabled" }) }));
+  assert.equal(result.sendable, true);
+});
+
+test("jev post-check never rescues an answer the judge rejected", async () => {
+  const result = await claimVerifier.verifyAnswer(
+    jevBase({ judge: async () => ({ verdict: "unsupported", claims: [] }), jevCheck: async () => jevOk() }),
+  );
+  assert.equal(result.sendable, false);
+});
+
+test("PIXIE_JEV_POSTCHECK=required blocks when Jev is unavailable, off skips the check", async () => {
+  const saved = process.env.PIXIE_JEV_POSTCHECK;
+  try {
+    process.env.PIXIE_JEV_POSTCHECK = "required";
+    const blocked = await claimVerifier.verifyAnswer(jevBase({ jevCheck: async () => jevOk({ status: "disabled" }) }));
+    assert.equal(blocked.sendable, false);
+    assert.ok(blocked.errors.includes("jev_postcheck_unavailable"));
+    const approved = await claimVerifier.verifyAnswer(jevBase({ jevCheck: async () => jevOk() }));
+    assert.equal(approved.sendable, true);
+    process.env.PIXIE_JEV_POSTCHECK = "off";
+    const skipped = await claimVerifier.verifyAnswer(
+      jevBase({ jevCheck: async () => jevOk({ decision: "escalate" }) }),
+    );
+    assert.equal(skipped.sendable, true);
+  } finally {
+    if (saved === undefined) delete process.env.PIXIE_JEV_POSTCHECK;
+    else process.env.PIXIE_JEV_POSTCHECK = saved;
+  }
+});

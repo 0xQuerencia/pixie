@@ -101,7 +101,14 @@ function finalAction({
 
   if (kind === "general" && hasAnswer && !unclear) return "reply_chat";
 
-  const talk = addressed && hasAnswer && !unclear && !requireGrounded && settings?.generalMentionChat !== false;
+  // Program answers are never sent ungrounded
+  const talk =
+    kind !== "program" &&
+    addressed &&
+    hasAnswer &&
+    !unclear &&
+    !requireGrounded &&
+    settings?.generalMentionChat !== false;
 
   if (role === "dm") return talk ? "reply_chat" : "uncertain";
 

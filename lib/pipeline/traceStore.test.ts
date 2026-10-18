@@ -65,7 +65,7 @@ test("trace store applies stage DTOs and scrubs secret values regardless of fiel
   assert.equal("excerpt" in payload.sources[0], false);
 });
 
-test("grounding trace keeps only the short claim DTO", () => {
+test("grounding trace keeps only the short claim DTO plus verifier error codes", () => {
   traceStore.append({
     programId: "trace-grounding",
     threadTs: "grounding-thread",
@@ -82,14 +82,15 @@ test("grounding trace keeps only the short claim DTO", () => {
           thought: "drop this",
         },
       ],
-      errors: ["drop this"],
+      errors: ["jev_escalate"],
     },
   });
 
   const payload = traceStore.forTicket("trace-grounding", 999999)[0];
   assert.equal(payload, undefined);
   const stored = traceStore.forThread("trace-grounding", "grounding-thread")[0];
-  assert.deepEqual(Object.keys(stored.payload).sort(), ["claims", "verdict"]);
+  assert.deepEqual(Object.keys(stored.payload).sort(), ["claims", "errors", "verdict"]);
+  assert.deepEqual(stored.payload.errors, ["jev_escalate"]);
   assert.equal(stored.payload.claims[0].supported, true);
   assert.deepEqual(stored.payload.claims[0].evidenceIds, ["e-1", "e-2"]);
   assert.ok(stored.payload.claims[0].reason.length <= 200);
@@ -196,4 +197,57 @@ test("trace decision filtering uses the normalized final decision", () => {
   assert.equal(traceStore.list("trace-decisions", { decision: "answer" }).length, 1);
   assert.equal(traceStore.list("trace-decisions", { decision: "escalate" }).length, 1);
   assert.equal(traceStore.list("trace-decisions", { decision: "ignored" }).length, 1);
+});
+
+test("context, generation, jev and sent fields are stored, not dropped as unknown", () => {
+  const base = { programId: "trace-prog", threadTs: "t-new-stages", requestId: "r-new" };
+  traceStore.append({
+    ...base,
+    stage: "context",
+    payload: { scope: "channel+thread", recentChannelMessages: 4, secret: "x" },
+  });
+  traceStore.append({
+    ...base,
+    stage: "generation",
+    payload: {
+      model: "kr/claude-sonnet-4.5",
+      router: "pixie.railway.internal:20128",
+      latencyMs: 812,
+      answerChars: 120,
+    },
+  });
+  traceStore.append({
+    ...base,
+    stage: "engagement",
+    payload: { intent: "support_question", jev: { action: "engage", probability: 0.9, latencyMs: 33, junk: 1 } },
+  });
+  traceStore.append({
+    ...base,
+    stage: "grounding",
+    payload: {
+      verdict: "unsupported",
+      sendable: false,
+      errors: ["jev_escalate"],
+      jev: { decision: "escalate", risk: 4 },
+      claims: [],
+    },
+  });
+  traceStore.append({ ...base, stage: "final_action", payload: { action: "reply", sent: true, latencyMs: 900 } });
+  const rows = traceStore.forThread("trace-prog", "t-new-stages");
+  const by = Object.fromEntries(
+    rows.map((row: { stage: string; payload: Record<string, unknown> }) => [row.stage, row.payload]),
+  );
+  assert.equal(by.context.recentChannelMessages, 4);
+  assert.equal(by.context.secret, undefined);
+  assert.equal(by.generation.model, "kr/claude-sonnet-4.5");
+  assert.equal(by.generation.latencyMs, 812);
+  assert.equal(by.engagement.jev.probability, 0.9);
+  assert.equal(by.engagement.jev.junk, undefined);
+  assert.deepEqual(by.grounding.errors, ["jev_escalate"]);
+  assert.equal(by.grounding.jev.risk, 4);
+  assert.equal(by.final_action.sent, true);
+  assert.equal(
+    rows.some((row: { stage: string }) => row.stage === "unknown"),
+    false,
+  );
 });

@@ -97,11 +97,21 @@ export interface VerifiedClaim {
   reason: string;
 }
 
+export interface JevAnswerCheck {
+  status: "ok" | "disabled" | "error";
+  decision: "answer" | "clarify" | "escalate" | "ignore" | null;
+  risk: number | null;
+  reason: string | null;
+  errorKind: string | null;
+  latencyMs: number;
+}
+
 export interface AnswerVerification {
   verdict: "supported" | "unsupported";
   sendable: boolean;
   claims: VerifiedClaim[];
   errors: string[];
+  jev?: { decision: string | null; risk: number | null; reason: string | null; status: string; latencyMs: number };
 }
 
 export type TicketStatus =

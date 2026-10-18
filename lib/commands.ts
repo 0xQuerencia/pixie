@@ -241,8 +241,8 @@ async function askCommand({ command, ack, respond: sendEphemeral }: CommandArgs)
   const askPolicy = require("./channelPolicy").resolve(command.channel_id, command.team_id || null);
   const askProgram = askPolicy.role === "none" ? null : askPolicy.program;
   const traceRequestId = `command:${command.user_id || "unknown"}:${Date.now()}`;
-  const appendCommandFinalAction = (action: string, reason: string) => {
-    if (!askProgram?.id) return;
+  const appendCommandFinalAction = (action: string, reason: string): boolean => {
+    if (!askProgram?.id) return true;
     try {
       traceStore.append({
         programId: askProgram.id,
@@ -251,14 +251,19 @@ async function askCommand({ command, ack, respond: sendEphemeral }: CommandArgs)
         stage: "final_action",
         payload: { action, reason },
       });
+      return true;
     } catch (error: unknown) {
-      log.debug("commands", `answer trace write failed: ${errorMessage(error)}`);
+      log.warn("commands", `answer trace write failed: ${errorMessage(error)}`);
+      return false;
     }
   };
   try {
     const result = askProgram ? await lookupAnswer(question, "", askProgram, command.channel_id as string) : null;
     if (result) {
-      appendCommandFinalAction("reply", "command_answer");
+      if (!appendCommandFinalAction("reply", "command_answer")) {
+        await sendEphemeral({ response_type: "ephemeral", text: respond.ERROR_FALLBACK });
+        return;
+      }
       await sendEphemeral({
         response_type: "ephemeral",
         text: `${result.answer}${respond.sourceLineFor(result.source, askProgram)}`,
@@ -267,7 +272,14 @@ async function askCommand({ command, ack, respond: sendEphemeral }: CommandArgs)
       return;
     }
 
-    if (askProgram) recordGap(question, command.user_id as string, command.channel_id as string, null, askProgram.id);
+    if (askProgram) {
+      // A program question is never answered from ungrounded chat
+      recordGap(question, command.user_id as string, command.channel_id as string, null, askProgram.id);
+      appendCommandFinalAction("uncertain", "command_ungrounded");
+      await sendEphemeral({ response_type: "ephemeral", text: respond.MENTION_FALLBACK });
+      db.recordMetric("fallback");
+      return;
+    }
     const { getChatReply } = require("./chat");
     const chatReply = await getChatReply(question, "", command.channel_id === config.slack.helpChannel);
     appendCommandFinalAction(chatReply ? "reply_chat" : "fallback", "command_answer");

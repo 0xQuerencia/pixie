@@ -22,6 +22,10 @@ interface JEVResult {
   errorKind?: string;
   intent?: string;
   decision?: { intent?: string };
+  reason?: string;
+  shouldEngageP?: number | null;
+  latencyMs?: number;
+  cached?: boolean;
 }
 
 function isIdentityOrSmalltalk(text: string) {
@@ -49,11 +53,18 @@ function postureFor(role: ChannelRole) {
 
 function fromJev(res: JEVResult | null) {
   if (!res) return { engage: false, intent: null, error: "unknown", source: "jev" };
+  const detail = {
+    action: res.action ?? null,
+    reason: res.reason ?? null,
+    probability: res.shouldEngageP ?? null,
+    latencyMs: res.latencyMs ?? null,
+    cached: res.cached === true,
+  };
   if (res.action === "error" || res.errorKind) {
-    return { engage: false, intent: null, error: res.errorKind || "unknown", source: "jev" };
+    return { engage: false, intent: null, error: res.errorKind || "unknown", source: "jev", detail };
   }
   const intentName = res.intent || res.decision?.intent || null;
-  return { engage: res.action === "engage", intent: intentName, error: null, source: "jev" };
+  return { engage: res.action === "engage", intent: intentName, error: null, source: "jev", detail };
 }
 
 async function fromLegacyIntent({

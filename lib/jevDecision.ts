@@ -115,6 +115,13 @@ function isFreeModel(model: unknown): boolean {
   return typeof model === "string" && /[:-]free$/.test(model.trim());
 }
 
+// Newest turns matter most for follow-ups: keep the tail
+function truncateTail(text: string, max: number): string {
+  const s = String(text || "");
+  if (s.length <= max) return s;
+  return `[truncated ${s.length - max} chars]…${s.slice(s.length - max)}`;
+}
+
 function buildJevState({
   message,
   conversationContext = "",
@@ -129,7 +136,7 @@ function buildJevState({
   const posture = channelPosture === "help" || channelPosture === "dm" ? channelPosture : "main";
   return {
     message: truncate(message!, MAX_MESSAGE_CHARS),
-    conversationContext: truncate(conversationContext, MAX_CONTEXT_CHARS),
+    conversationContext: truncateTail(conversationContext, MAX_CONTEXT_CHARS),
     program: prog,
     channelPosture: posture,
     addressed: Boolean(addressed),
