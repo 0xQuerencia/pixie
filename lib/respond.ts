@@ -16,6 +16,9 @@ const pipelineEvents = require("./pipeline/events");
 const supportMemory = require("./supportMemory");
 const retention = require("./retention");
 const traceStore = require("./pipeline/traceStore");
+const providerHealth = require("./providerHealth");
+const llm = require("./llm");
+const answerModule = require("./answer");
 const { ThreadQueue, threadKey } = require("./pipeline/threadQueue");
 const knowledge = require("./knowledge");
 const retrieve = require("./retrieve");
@@ -129,6 +132,8 @@ function retrievalTrace(programId: string | null, question: string) {
 const MENTION_FALLBACK = "hmm not totally sure about that one — ask a helper if it's something specific :oke:";
 const ERROR_FALLBACK = "having trouble thinking rn, try again in a sec :sob:";
 const RATE_LIMITED = "woah slow down a sec — gimme a minute to catch up :pls:";
+const OUTAGE_NOTICE =
+  "I can't reach my answer service right now, so I can't check this one yet. Try again in a bit :sob:";
 const UNCLEAR_MARKER = "UNCLEAR";
 
 const DOCS_ONLY: AnswerMode = "docs-only";
@@ -797,8 +802,13 @@ async function respondTurn({
   const tickets = require("./tickets");
   const requireGrounded = process.env.PIXIE_REQUIRE_GROUNDED_ANSWER === "1" || prog?.requireGroundedAnswer;
   const isRootMessage = !messageTs || messageTs === threadTs;
+  const providersDown = [
+    "jev",
+    llm.healthKey(answerModule.selectAnswerTier({ isPing: isAddressed, inHelpChannel })),
+    llm.healthKey(config.intent),
+  ].some((key) => providerHealth.isOpen(key));
   const supportTicketReady =
-    plan.support && isRootMessage && !programs.isShadow(prog)
+    plan.support && isRootMessage && !programs.isShadow(prog) && !providersDown
       ? tickets
           .ensureSupportTicket({
             program: prog,
@@ -840,6 +850,34 @@ async function respondTurn({
     });
     appendAnswerTrace("handoff", { reason, sources, question: trimmed });
     trace.set({ helperEscalated: true });
+  };
+
+  const outageKey = `${workspaceId || ""}:${channel}:${threadTs}`;
+  const handleOutage = async (source: string, reason: string) => {
+    const wantsNotice =
+      (inHelpChannel || isAddressed) && !programs.isShadow(prog) && providerHealth.noticeDue(outageKey);
+    const circuitOpen = providersDown || providerHealth.isOpen("jev");
+    const traced = appendAnswerTrace("outage", { source, reason, circuitOpen, noticeSent: wantsNotice });
+    if (wantsNotice && traced) {
+      providerHealth.markNotified(outageKey);
+      await publishAndMark({
+        silencedBefore,
+        client,
+        channel,
+        threadTs,
+        placeholder: placeholder(),
+        text: OUTAGE_NOTICE,
+        program: prog,
+        seed: false,
+      });
+      context.addToThread(threadTs, "assistant", OUTAGE_NOTICE, null, channel);
+    } else {
+      await reply.discardPlaceholder(client, channel, placeholder());
+    }
+    lifecycleCompleted = true;
+    db.recordMetric("error", Date.now() - startedAt, "provider_outage", programId);
+    finishTrace(sentToSlack ? "error_reply" : "silence", "provider_outage");
+    return sentToSlack;
   };
 
   const aiOff = !programs.aiAnswersEnabled(programId) || (role === "help" && settings?.aiReplies === false);
@@ -1031,6 +1069,7 @@ async function respondTurn({
         log.debug("respond", `stream settlement failed after lookup error: ${errorMessage(settleError)}`);
       }
       await supportTicketReady;
+      if (providerHealth.isProviderFailure(error)) return handleOutage("answer", "lookup_failed");
       const lookupFailureAction = inHelpChannel ? "escalate" : isAddressed ? "error_reply" : "silence";
       finishTrace(lookupFailureAction, "lookup_error");
       const handled = await handleLookupFailure({
@@ -1098,7 +1137,8 @@ async function respondTurn({
       requireGrounded: Boolean(requireGrounded),
     });
 
-    if (!grounded && kind === "program" && !cannotTell && !isClarifyingQuestion(result.answer)) {
+    const verifierOutage = kind === "program" && result.verification?.outage === true;
+    if (!grounded && kind === "program" && !cannotTell && !verifierOutage && !isClarifyingQuestion(result.answer)) {
       db.recordGap(trimmed, userId, channel, threadTs, programId);
     }
 
@@ -1136,6 +1176,7 @@ async function respondTurn({
       })),
     });
     appendAnswerTrace("grounding", groundingDetails);
+    if (verifierOutage) return handleOutage("verification", "reviewer_unavailable");
     const decisionTraced = appendAnswerTrace("decision", { expectedAction: action, reason: plan.reason });
     if (!decisionTraced && (action === "reply" || action === "reply_chat" || action === "escalate_and_reply_chat")) {
       // No complete trace, no send

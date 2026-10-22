@@ -29,6 +29,7 @@ interface VerifyInput {
   jevCheck?: ((input: Record<string, unknown>) => Promise<JevAnswerCheck>) | null;
   allowFixtures?: boolean;
   fixtureClaims?: unknown[];
+  programAnswer?: boolean;
 }
 
 const JUDGE_TIMEOUT_MS = 6000;
@@ -299,6 +300,8 @@ function splitSentences(value: unknown): string[] {
 
 const PLEASANTRY_RE =
   /^(?:(?:i )?hope (?:this|that) helps|let me know|feel free|happy to help|glad to help|good luck|here(?:'s| is| are)\b|see (?:below|above)|as follows|great question|no problem|you're welcome|you are welcome|of course|sure|okay|ok|got it)\b/i;
+const DEFERRAL_RE =
+  /\b(?:ask|contact|reach out to|message|dm|email|check with|talk to|speak (?:to|with)|raise (?:it )?with)\b[^.!?]*\b(?:support|helpers?|organi[sz]ers?|staff|mods?|moderators?|team|humans?|admins?)\b|\b(?:support|helpers?|organi[sz]ers?|staff|team)\b[^.!?]*\b(?:can|will|should|could)\s+(?:confirm|help|tell|answer|clarify|let you know|assist)\b|\bi(?:'m| am) not sure\b|\bi (?:do not|don't) know\b|\bcan(?:not|'t) verify\b|\bthey(?:'ll| will) (?:tell|let) you\b/i;
 const IMPERATIVE_RE = /^(?:please\s+)?(?:try|restart|refresh|reload|clear|wait|ask|contact|reach|let)\b/i;
 const POLICY_RE =
   /\b(?:eligib\w*|allowed|prohibited|forbidden|banned|permission|deadline|due|payout\w*|grants?|refund\w*|reimburs\w*|rules?|limit\w*|caps?|approv\w*|reject\w*|denied|submit\w*|apply|application|required|must|cannot|can't|fees?|costs?|price|free|credits?|points?|dollars?|stipend|prize)\b|[$€£]\s*\d/i;
@@ -309,6 +312,14 @@ function isMaterialClaim(sentence: string) {
   if (MATERIAL_RE.test(clean)) return true;
   if (PLEASANTRY_RE.test(clean) || IMPERATIVE_RE.test(clean)) return false;
   return contentTokens(clean).length >= 3;
+}
+
+// Every sentence hands the question to a person; no statement of fact is made
+function isDeferral(answer: string) {
+  const sentences = splitSentences(answer);
+  const quiet = (sentence: string) =>
+    DEFERRAL_RE.test(sentence) || ESCALATION_RE.test(textOf(sentence)) || PLEASANTRY_RE.test(sentence);
+  return sentences.some((sentence) => DEFERRAL_RE.test(sentence)) && sentences.every(quiet);
 }
 
 function hasPolicyClaims(answer: string) {
@@ -581,9 +592,18 @@ function deterministicClaim(claim: string, evidence: ClaimEvidence[], programId:
 }
 
 function deterministicVerify(input: VerifyInput): AnswerVerification {
+  if (isDeferral(textOf(input.answer))) {
+    return { verdict: "unsupported", sendable: false, claims: [], errors: ["deferral"] };
+  }
   const claims = extractMaterialClaims(textOf(input.answer));
   if (claims.length === 0) {
-    return { verdict: "supported", sendable: Boolean(textOf(input.answer)), claims: [], errors: [] };
+    const noEvidence = input.programAnswer === true && !(Array.isArray(input.evidence) && input.evidence.length > 0);
+    return {
+      verdict: noEvidence ? "unsupported" : "supported",
+      sendable: Boolean(textOf(input.answer)) && !noEvidence,
+      claims: [],
+      errors: noEvidence ? ["no_evidence"] : [],
+    };
   }
 
   const programId = textOf(input.programId);
@@ -854,9 +874,13 @@ async function jevPostCheck(
   return { ok: true, check };
 }
 
+// A reviewer that could not run says nothing about the answer itself
+const OUTAGE_ERRORS = new Set(["jev_postcheck_error", "jev_postcheck_unavailable"]);
+const JUDGE_OUTAGE = new Set(["judge_error", "judge_timeout"]);
+
 async function verifyAnswer(input: VerifyInput): Promise<AnswerVerification> {
   const base = deterministicVerify(input);
-  if (!base.sendable || base.claims.length === 0) return base;
+  if (!base.sendable || (base.claims.length === 0 && input.programAnswer !== true)) return base;
   const [primary, jevResult] = await Promise.all([applyJudge(base, input), jevPostCheck(base, input)]);
   const jevDetail = jevResult.check
     ? {
@@ -869,13 +893,16 @@ async function verifyAnswer(input: VerifyInput): Promise<AnswerVerification> {
         },
       }
     : {};
-  if (jevResult.ok || !primary.sendable) return { ...primary, ...jevDetail };
+  const outage =
+    OUTAGE_ERRORS.has(jevResult.error || "") || primary.errors.some((code: string) => JUDGE_OUTAGE.has(code));
+  if (jevResult.ok || !primary.sendable) return { ...primary, ...jevDetail, ...(outage ? { outage } : {}) };
   return {
     ...primary,
     ...jevDetail,
     verdict: "unsupported",
     sendable: false,
     errors: [...new Set([...primary.errors, jevResult.error || "jev_postcheck_error"])],
+    ...(outage ? { outage } : {}),
   };
 }
 

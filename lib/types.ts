@@ -111,6 +111,7 @@ export interface AnswerVerification {
   sendable: boolean;
   claims: VerifiedClaim[];
   errors: string[];
+  outage?: boolean;
   jev?: { decision: string | null; risk: number | null; reason: string | null; status: string; latencyMs: number };
 }
 

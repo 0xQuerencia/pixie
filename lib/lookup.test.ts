@@ -217,7 +217,8 @@ test("policy answers with no selected evidence are rejected", async () => {
       "",
       [],
     );
-    assert.equal(result, null);
+    assert.equal(result?.answer || "", "", "a bare 'I don't know' is never sent");
+    assert.equal(result?.unclear, true, "it becomes an escalation signal");
   } finally {
     knowledge.sourceEligibility = original;
   }

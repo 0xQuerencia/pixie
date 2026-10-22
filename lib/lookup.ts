@@ -445,8 +445,14 @@ async function applyGroundingBoundaryAsync(
     question,
     context,
     programName: typeof prog === "object" && prog ? String(prog.name || "") : "",
+    programAnswer: Boolean(programId) && !allowUngroundedChat,
   });
   const enriched = { ...result, evidence, verification: checked };
+  if (programId && !allowUngroundedChat) {
+    // The reviewer never ran, or the model only handed the question to a person
+    if (checked.outage) return { ...enriched, answer: "" };
+    if (checked.errors.includes("deferral")) return { ...enriched, answer: "", unclear: true };
+  }
   const source = configuredSource(result, prog);
   const generated =
     (result.direct === true && evidence.some((item) => item.sourceName === result.source)) ||
@@ -508,7 +514,8 @@ async function verifiedCacheHit(
   if (!hit) return null;
   const programId = idOf(prog);
   const details = selectedContext(retrievalQuery(question, contextPrompt, prog), programId);
-  return applyGroundingBoundaryAsync(hit, prog, question, details.context, details.evidence);
+  const checked = await applyGroundingBoundaryAsync(hit, prog, question, details.context, details.evidence);
+  return checked?.verification?.outage || (checked as { unclear?: boolean } | null)?.unclear ? null : checked;
 }
 
 function retrievalQuery(question: string, contextPrompt = "", prog: ProgramLike | string | null = null) {

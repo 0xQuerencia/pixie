@@ -37,6 +37,7 @@ const KNOWN_STAGES = new Set([
   "grounding",
   "decision",
   "handoff",
+  "outage",
   "final_action",
   "final",
 ]);
@@ -263,6 +264,12 @@ function normalizePayload(stage: string, value: unknown): Record<string, unknown
   if (stage === "handoff") {
     for (const key of ["reason", "question", "target"]) putString(out, input, key, 400);
     putStrings(out, input, "sources", 30);
+    return out;
+  }
+
+  if (stage === "outage") {
+    for (const key of ["source", "provider", "reason"]) putString(out, input, key, 240);
+    for (const key of ["circuitOpen", "noticeSent"]) putBoolean(out, input, key);
     return out;
   }
 

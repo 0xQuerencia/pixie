@@ -1,5 +1,6 @@
 import configModule = require("./config");
 import log = require("./log");
+import providerHealth = require("./providerHealth");
 
 const { config, jevConfig } = configModule;
 interface JevConfig {
@@ -278,6 +279,7 @@ function classifyError(err: JevError | null | undefined): string {
   if (err.jevErrorKind && ERROR_KINDS.has(err.jevErrorKind)) return err.jevErrorKind;
   if (err.jevErrorKind === "provider") return "unavailable";
   if (err.jevErrorKind === "other") return "unknown";
+  if (err.code === "PROVIDER_UNAVAILABLE") return "unavailable";
   if (err.name === "AbortError" || /abort|timeout|timed out/i.test(err.message || "")) return "timeout";
   if (/rate.?limit/i.test(`${err.name || ""} ${err.message || ""}`)) return "rate_limit";
   const status = err.status || err.statusCode || err.response?.status;
@@ -291,6 +293,32 @@ function classifyError(err: JevError | null | undefined): string {
   if (/parse|valid|schema|unsupported/i.test(err.message || "")) return "bad_response";
   if (/api key/i.test(err.message || "")) return "auth";
   return "unknown";
+}
+
+const JEV_HARD_KINDS = new Set(["auth", "quota", "config"]);
+
+function jevSeverity(err: unknown): "hard" | "transient" | "ignore" {
+  return JEV_HARD_KINDS.has(classifyError(err as JevError)) ? "hard" : "transient";
+}
+
+function defaultEvaluate(cfg: JevConfig, deps: EvaluationDeps): EvaluateFn {
+  return (args: EvaluationArgs) =>
+    providerHealth.guard(
+      "jev",
+      () =>
+        require("./jevExperiential").experientialEvaluate(
+          {
+            baseUrl: cfg.baseUrl || JEV_BASE_URL_DEFAULT,
+            apiKey: experientialApiKey(),
+            model: args.model,
+            state: args.state,
+            questions: args.questions,
+            timeoutMs: args.timeoutMs,
+          },
+          { httpPost: deps.httpPost },
+        ),
+      jevSeverity,
+    );
 }
 
 const decisionCache = new Map();
@@ -404,20 +432,7 @@ async function evaluateSupportDecision(
   }
   const state = buildJevState({ message, conversationContext, program, channelPosture, addressed });
   const questions = deps.questions || buildJevQuestions();
-  const evaluateFn: EvaluateFn =
-    deps.evaluateFn ||
-    ((args: EvaluationArgs) =>
-      require("./jevExperiential").experientialEvaluate(
-        {
-          baseUrl: cfg.baseUrl || JEV_BASE_URL_DEFAULT,
-          apiKey: experientialApiKey(),
-          model: args.model,
-          state: args.state,
-          questions: args.questions,
-          timeoutMs: args.timeoutMs,
-        },
-        { httpPost: deps.httpPost },
-      ));
+  const evaluateFn: EvaluateFn = deps.evaluateFn || defaultEvaluate(cfg, deps);
   const cacheable = !deps.evaluateFn && !deps.questions;
   const key = cacheable ? cacheKeyFor({ model, state }) : null;
   const keyHash = key ? key.slice(0, 12) : null;
@@ -521,20 +536,7 @@ async function evaluateCustomDecision(
     return { status: "error", errorKind: "config", latencyMs: Date.now() - startedAt };
   }
 
-  const evaluateFn: EvaluateFn =
-    deps.evaluateFn ||
-    ((args: EvaluationArgs) =>
-      require("./jevExperiential").experientialEvaluate(
-        {
-          baseUrl: cfg.baseUrl || JEV_BASE_URL_DEFAULT,
-          apiKey: experientialApiKey(),
-          model: args.model,
-          state: args.state,
-          questions: args.questions,
-          timeoutMs: args.timeoutMs,
-        },
-        { httpPost: deps.httpPost },
-      ));
+  const evaluateFn: EvaluateFn = deps.evaluateFn || defaultEvaluate(cfg, deps);
 
   try {
     const result = await evaluateFn({
