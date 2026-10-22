@@ -21,7 +21,8 @@ interface HttpLike {
 }
 
 const circuits = new Map<string, Circuit>();
-const notices = new Map<string, number>();
+// Per thread: when it was told, and which providers it was told about
+const notices = new Map<string, { at: number; blame: Set<string> }>();
 
 const HARD_STATUS = new Set([401, 402, 403, 404]);
 const NETWORK_CODES = /^(?:ECONN\w*|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ERR_CANCELED|UND_ERR\w*)$/;
@@ -71,7 +72,9 @@ function recordSuccess(key: string): void {
   const c = circuits.get(key);
   if (!c) return;
   circuits.delete(key);
-  if (c.fails >= THRESHOLD) notices.clear();
+  for (const [thread, notice] of notices) {
+    if (notice.blame.delete(key) && notice.blame.size === 0) notices.delete(thread);
+  }
 }
 
 function recordFailure(key: string, severity: Severity): void {
@@ -97,18 +100,23 @@ async function guard<T>(
     return result;
   } catch (error: unknown) {
     recordFailure(key, severityOf(error));
+    if (error && typeof error === "object" && !("provider" in error)) (error as { provider?: string }).provider = key;
     throw error;
   }
 }
 
 function noticeDue(threadKey: string): boolean {
-  const at = notices.get(threadKey);
-  return at === undefined || Date.now() - at >= NOTICE_TTL_MS;
+  const notice = notices.get(threadKey);
+  return notice === undefined || Date.now() - notice.at >= NOTICE_TTL_MS;
 }
 
-function markNotified(threadKey: string): void {
+function markNotified(threadKey: string, blame: string[] = []): void {
   if (notices.size >= MAX_NOTICES) notices.delete(notices.keys().next().value as string);
-  notices.set(threadKey, Date.now());
+  notices.set(threadKey, { at: Date.now(), blame: new Set(blame) });
+}
+
+function openKeys(): string[] {
+  return [...circuits.keys()].filter(isOpen);
 }
 
 function reset(): void {
@@ -125,6 +133,7 @@ export = {
   httpSeverity,
   isProviderFailure,
   isOpen,
+  openKeys,
   guard,
   noticeDue,
   markNotified,

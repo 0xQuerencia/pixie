@@ -56,6 +56,8 @@ const SHARED_TEST_SOURCES = ["Docs", "Acme Docs", "Acme FAQ"].map((name) => ({
   content: SAFE_SOURCE_TEXT,
 }));
 
+const realGroundedAnswer = answer.getGroundedAnswer;
+const realAnswerOrChat = answer.getAnswerOrChat;
 answer.getGroundedAnswer = async () => null;
 answer.getAnswerOrChat = async () => null;
 let realComplete: typeof llm.complete;
@@ -86,6 +88,8 @@ before(() => {
   llm.complete = async () => ({ text: "NONE", finishReason: "stop" });
 });
 after(() => {
+  answer.getGroundedAnswer = realGroundedAnswer;
+  answer.getAnswerOrChat = realAnswerOrChat;
   llm.complete = realComplete;
   config.slack.faqChannels = savedFaq;
   if (savedProgramsJson === undefined) delete process.env.PIXIE_PROGRAMS_JSON;

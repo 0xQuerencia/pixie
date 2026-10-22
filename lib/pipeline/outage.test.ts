@@ -163,7 +163,6 @@ test("the outage decision is recorded in the trace before anything is sent", asy
   expect(outage.noticeSent).toBe(true);
   expect(stages(threadTs).indexOf("outage")).toBeLessThan(stages(threadTs).indexOf("final_action"));
   expect((stage(threadTs, "final_action") as Rec).reason).toBe("provider_outage");
-  expect(db.listGaps ? true : true).toBe(true);
 });
 
 test("a failed trace write withholds the notice and still escalates nobody", async () => {

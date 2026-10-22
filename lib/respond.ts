@@ -853,13 +853,16 @@ async function respondTurn({
   };
 
   const outageKey = `${workspaceId || ""}:${channel}:${threadTs}`;
-  const handleOutage = async (source: string, reason: string) => {
+  const handleOutage = async (source: string, reason: string, failedProvider?: string) => {
     const wantsNotice =
       (inHelpChannel || isAddressed) && !programs.isShadow(prog) && providerHealth.noticeDue(outageKey);
     const circuitOpen = providersDown || providerHealth.isOpen("jev");
     const traced = appendAnswerTrace("outage", { source, reason, circuitOpen, noticeSent: wantsNotice });
     if (wantsNotice && traced) {
-      providerHealth.markNotified(outageKey);
+      providerHealth.markNotified(
+        outageKey,
+        [...providerHealth.openKeys(), failedProvider].filter((key): key is string => Boolean(key)),
+      );
       await publishAndMark({
         silencedBefore,
         client,
@@ -1069,7 +1072,8 @@ async function respondTurn({
         log.debug("respond", `stream settlement failed after lookup error: ${errorMessage(settleError)}`);
       }
       await supportTicketReady;
-      if (providerHealth.isProviderFailure(error)) return handleOutage("answer", "lookup_failed");
+      if (providerHealth.isProviderFailure(error))
+        return handleOutage("answer", "lookup_failed", (error as { provider?: string })?.provider);
       const lookupFailureAction = inHelpChannel ? "escalate" : isAddressed ? "error_reply" : "silence";
       finishTrace(lookupFailureAction, "lookup_error");
       const handled = await handleLookupFailure({

@@ -102,11 +102,33 @@ test("one outage notice per thread until the provider recovers", async () => {
   clock += health.NOTICE_TTL_MS + 1;
   assert.equal(health.noticeDue("t1"), true);
 
-  health.markNotified("t1");
+  health.markNotified("t1", ["p"]);
   await fail("p", err(403));
   clock += health.BASE_COOLDOWN_MS + 1;
   await health.guard("p", async () => "ok");
   assert.equal(health.noticeDue("t1"), true, "recovery starts a new outage period");
+});
+
+test("recovery of one provider does not reset notices blamed on another", async () => {
+  await fail("a", err(403));
+  await fail("b", err(403));
+  health.markNotified("t1", ["a"]);
+  clock += health.BASE_COOLDOWN_MS + 1;
+  await health.guard("b", async () => "ok");
+  assert.equal(health.noticeDue("t1"), false, "b recovering says nothing about a");
+  await health.guard("a", async () => "ok");
+  assert.equal(health.noticeDue("t1"), true);
+});
+
+test("a notice blamed on several providers is released only when all have recovered", async () => {
+  await fail("a", err(403));
+  await fail("b", err(403));
+  health.markNotified("t1", ["a", "b"]);
+  clock += health.BASE_COOLDOWN_MS + 1;
+  await health.guard("a", async () => "ok");
+  assert.equal(health.noticeDue("t1"), false);
+  await health.guard("b", async () => "ok");
+  assert.equal(health.noticeDue("t1"), true);
 });
 
 test("isProviderFailure separates provider faults from our own bugs", () => {
