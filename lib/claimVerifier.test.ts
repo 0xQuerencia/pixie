@@ -16,6 +16,29 @@ const supportedJudge = async (claims: Array<{ claim: string }>) => ({
   claims: claims.map(({ claim }) => ({ claim, supported: true, evidenceIds: ["e1"], reason: "matched" })),
 });
 
+test("emoji shortcodes are decoration, not claims", async () => {
+  const evidence = [sourceEvidence("Grants ship to the US and Canada only. Delivery takes two to three weeks.")];
+  const ask = (answer: string) => claimVerifier.verifyAnswer({ programId: "program-a", answer, evidence, judge: null });
+  for (const answer of ["US and Canada only :yuh:", "two to three weeks :yuh:", ":sparkles: US and Canada only"]) {
+    const result = await ask(answer);
+    assert.equal(result.sendable, true, answer);
+  }
+  const wrong = await claimVerifier.verifyAnswer({
+    programId: "program-a",
+    answer: "Delivery takes two days :yuh:",
+    evidence,
+    judge: null,
+  });
+  assert.equal(wrong.sendable, false);
+  const clock = await claimVerifier.verifyAnswer({
+    programId: "program-a",
+    answer: "Delivery takes 10:30:45 weeks",
+    evidence,
+    judge: null,
+  });
+  assert.equal(clock.sendable, false);
+});
+
 test("non-material chatter is sendable without inventing claims", async () => {
   const result = await claimVerifier.verifyAnswer({
     programId: "program-a",
