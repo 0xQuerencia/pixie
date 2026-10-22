@@ -130,7 +130,7 @@ export interface TestIncidentApi {
   affectedReports(...args: unknown[]): Array<{ thread_ts: string; notified_at: number | null }>;
   createIncident(...args: unknown[]): { ok?: boolean; error?: string; incident: TestIncident };
   declareIncident(...args: unknown[]): { ok?: boolean; error?: string; incident: TestIncident };
-  detectBursts(...args: unknown[]): { candidates: TestIncident[]; error?: string };
+  detectBursts(...args: unknown[]): { candidates: TestIncident[]; suppressed: TestIncident[]; error?: string };
   getIncident(...args: unknown[]): TestIncident | null;
   incidentTickets(...args: unknown[]): TestIncident[];
   incidentClusterQuestions(...args: unknown[]): string[][];
@@ -146,6 +146,9 @@ export interface TestIncidentApi {
     error?: string;
   };
   unlinkTicket(...args: unknown[]): { ok?: boolean; error?: string };
+  timeline(
+    ...args: unknown[]
+  ): Array<{ action: string; actorId: string | null; at: number; metadata: Record<string, unknown> | null }>;
 }
 
 export interface TestMacro {

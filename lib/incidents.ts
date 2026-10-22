@@ -31,6 +31,15 @@ const DUPLICATE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const INCIDENT_WINDOW_MS = 60 * 60 * 1000;
 const INCIDENT_THRESHOLD = 4;
 const INCIDENT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const MIN_DISTINCT_REQUESTERS = 3;
+const LIVE_STATUSES = ["candidate", "confirmed"];
+const AUDIT_TICKET_SAMPLE = 50;
+const TRANSITIONS: Record<string, string[]> = {
+  candidate: ["confirmed", "dismissed"],
+  confirmed: ["resolved", "dismissed"],
+  dismissed: ["candidate", "confirmed"],
+  resolved: ["confirmed", "dismissed"],
+};
 
 function similarityScore(a: string, b: string): number {
   return gapClusters.pairOverlap(a, b);
@@ -91,6 +100,8 @@ const OUTAGE_LANGUAGE =
   /\b(?:down|offline|unavailable|broken|inaccessible|failing|failed|failure|error|issue|problem|outage|crash(?:ing)?|500)\b|\b(?:blank(?:\s+page)?|page\s+is\s+blank|redirect(?:s|ed)?(?:\s+\w+){0,2}\s+back\s+to\s+(?:the\s+)?login|sends?\s+me\s+back\s+to\s+(?:the\s+)?login|can(?:not|'t|t)\s+sign\s*[- ]?in|login\s+(?:is\s+)?(?:broken|failing)|not\s+(?:loading|load|working)|(?:isn'?t|is\s+not|can not|cannot|cant|can't|won't|wont|unable\s+to)\s+(?:load|open|access|reach|work|sign\s*[- ]?in))\b/i;
 const DIRECT_OUTAGE_LANGUAGE =
   /\b(?:down|offline|unavailable|broken|inaccessible|failing|failed|failure|error|outage|crash(?:ing)?|500)\b|\b(?:blank(?:\s+page)?|page\s+is\s+blank|redirect(?:s|ed)?(?:\s+\w+){0,2}\s+back\s+to\s+(?:the\s+)?login|sends?\s+me\s+back\s+to\s+(?:the\s+)?login|can(?:not|'t|t)\s+sign\s*[- ]?in|login\s+(?:is\s+)?(?:broken|failing)|not\s+(?:loading|load|working)|(?:isn'?t|is\s+not|can not|cannot|cant|can't|won't|wont|unable\s+to)\s+(?:load|open|access|reach|work|sign\s*[- ]?in))\b/i;
+const OPERATIONAL_LANGUAGE =
+  /\b(?:delayed|late|stuck|missing|pending|(?:not|n't|never)\s+(?:received|arrived|delivered|showing|updated)|still\s+waiting)\b/i;
 const ACCESS_LANGUAGE = /\b(?:site|website|webpage|page|portal|app|service|dashboard|load|open|access|reach)\b/i;
 const INCIDENT_NOISE = new Set([
   "down",
@@ -221,9 +232,15 @@ function incidentClusterQuestions(questions: string[], threshold = SIMILARITY_TH
           incidentTerms(questions[right]).has("incident_service");
         const similar = incidentSimilarityScore(questions[left], questions[right]);
         if ((sharedConcreteTerm || genericService) && similar >= threshold) union(left, right);
-      } else if (!leftOutage && !rightOutage && similarityScore(questions[left], questions[right]) >= threshold) {
-        // Preserve the existing duplicate-question burst behavior for ordinary
-        // support gaps; semantic outage grouping above is the additional gate.
+      } else if (
+        !leftOutage &&
+        !rightOutage &&
+        OPERATIONAL_LANGUAGE.test(questions[left]) &&
+        OPERATIONAL_LANGUAGE.test(questions[right]) &&
+        similarityScore(questions[left], questions[right]) >= threshold
+      ) {
+        // Same non-outage problem in near-identical words ("payouts delayed");
+        // plain repeated questions never reach here
         union(left, right);
       }
     }
@@ -269,24 +286,82 @@ function fetchRecentTickets(programId: string, cutoff: number): Row[] {
   return db
     .handle()
     .query(
-      `SELECT id, question, thread_ts, created_at FROM tickets
+      `SELECT id, question, thread_ts, requester_id, created_at FROM tickets
      WHERE program_id = ? AND created_at > ? AND status NOT IN ('closed','spam','duplicate')
      ORDER BY created_at ASC LIMIT 300`,
     )
     .all(programId, cutoff) as Row[];
 }
 
-function fetchLiveIncidents(programId: string, now: number): Row[] {
-  return db
-    .handle()
-    .query(
-      "SELECT * FROM program_incidents WHERE program_id = ? AND status IN ('candidate','confirmed') AND created_at > ? ORDER BY created_at DESC LIMIT 10",
-    )
-    .all(programId, now - INCIDENT_COOLDOWN_MS) as Row[];
+function recordIncidentAudit(
+  incident: Row,
+  action: string,
+  actorId: string | null,
+  metadata: Record<string, unknown> = {},
+): void {
+  const recordAudit = audit.record as (entry: Record<string, unknown>) => unknown;
+  recordAudit({
+    programId: incident.program_id,
+    actorId,
+    action,
+    entityType: "incident",
+    entityId: incident.id,
+    metadata,
+  });
 }
 
-function findCooldownIncident(live: Row[], representative: string): Row | undefined {
-  return live.find((inc) => isSimilar(String(inc.title || ""), representative));
+// Incidents this cluster already belongs to by shared tickets, live ones first
+function overlappingIncident(programId: string, ticketIds: number[]): { incident: Row; linked: Set<number> } | null {
+  if (ticketIds.length === 0) return null;
+  const marks = ticketIds.map(() => "?").join(",");
+  const links = db
+    .handle()
+    .query(
+      `SELECT it.incident_id AS incident_id, it.ticket_id AS ticket_id FROM incident_tickets it
+       JOIN program_incidents i ON i.id = it.incident_id
+       WHERE i.program_id = ? AND it.program_id = ? AND it.ticket_id IN (${marks})`,
+    )
+    .all(programId, programId, ...ticketIds) as Array<{ incident_id: number; ticket_id: number }>;
+  const byIncident = new Map<number, Set<number>>();
+  for (const l of links) {
+    if (!byIncident.has(l.incident_id)) byIncident.set(l.incident_id, new Set());
+    byIncident.get(l.incident_id)?.add(l.ticket_id);
+  }
+  let best: { incident: Row; linked: Set<number> } | null = null;
+  for (const [incidentId, linked] of byIncident) {
+    const incident = getIncident(incidentId, programId);
+    if (!incident) continue;
+    const better =
+      !best ||
+      Number(LIVE_STATUSES.includes(String(incident.status))) >
+        Number(LIVE_STATUSES.includes(String(best.incident.status))) ||
+      (LIVE_STATUSES.includes(String(incident.status)) === LIVE_STATUSES.includes(String(best.incident.status)) &&
+        linked.size > best.linked.size);
+    if (better) best = { incident, linked };
+  }
+  return best;
+}
+
+function closedAt(incident: Row): number {
+  return Number(incident.dismissed_at || incident.resolved_at || 0);
+}
+
+// Live incidents stay matchable at any age; closed ones only just after closing
+function titleMatchedIncident(programId: string, representative: string, now: number): Row | null {
+  const rows = db
+    .handle()
+    .query("SELECT * FROM program_incidents WHERE program_id = ? ORDER BY id DESC LIMIT 25")
+    .all(programId) as Row[];
+  const matches = rows.filter((inc) => {
+    if (!isSimilar(String(inc.title || ""), representative)) return false;
+    if (LIVE_STATUSES.includes(String(inc.status))) return true;
+    return now - closedAt(inc) < INCIDENT_COOLDOWN_MS;
+  });
+  return matches.find((inc) => LIVE_STATUSES.includes(String(inc.status))) || matches[0] || null;
+}
+
+function distinctRequesters(rows: Row[]): number {
+  return new Set(rows.map((r) => String(r.requester_id || ""))).size;
 }
 
 function buildQuestionIndex(rows: Row[]): Map<string, number[]> {
@@ -337,6 +412,7 @@ function insertCandidate({
   windowMs,
   startedAt,
   now,
+  recurrenceOf = null,
 }: {
   programId: string;
   representative: string;
@@ -344,6 +420,7 @@ function insertCandidate({
   windowMs: number;
   startedAt: number;
   now: number;
+  recurrenceOf?: number | null;
 }): { incidentId: number; title: string } {
   const title = truncateTitle(representative);
   const res = db
@@ -355,7 +432,7 @@ function insertCandidate({
     .run(
       programId,
       title,
-      burstReason(memberRows.length, windowMs),
+      burstReason(memberRows.length, windowMs) + (recurrenceOf ? `, recurrence of #${recurrenceOf}` : ""),
       burstConfidence(memberRows.length),
       startedAt,
       now,
@@ -423,6 +500,78 @@ function incidentTickets(incidentId: number, programId?: string | null): Row[] {
     .all(incidentId) as Row[];
 }
 
+function settleCluster({
+  programId,
+  memberRows,
+  threshold,
+  windowMs,
+  now,
+}: {
+  programId: string;
+  memberRows: Row[];
+  threshold: number;
+  windowMs: number;
+  now: number;
+}): Row | null {
+  const ids = memberRows.map((r) => Number(r.id));
+  const representative = String(memberRows[0].question || "");
+  const matched =
+    overlappingIncident(programId, ids) ||
+    (() => {
+      const byTitle = titleMatchedIncident(programId, representative, now);
+      return byTitle ? { incident: byTitle, linked: new Set<number>() } : null;
+    })();
+
+  if (matched && LIVE_STATUSES.includes(String(matched.incident.status))) {
+    const linked = linkRowsToIncident(Number(matched.incident.id), memberRows, programId, now);
+    if (linked > 0) {
+      recordIncidentAudit(matched.incident, "incident.tickets_linked", null, {
+        linked,
+        ticketIds: ids.slice(0, AUDIT_TICKET_SAMPLE),
+      });
+    }
+    return {
+      incidentId: matched.incident.id,
+      title: matched.incident.title,
+      status: matched.incident.status,
+      linked,
+      deduped: true,
+    };
+  }
+
+  // Closed incidents are only reopened by reports they have not already seen
+  let evidence = memberRows;
+  let recurrenceOf: number | null = null;
+  if (matched) {
+    const since = closedAt(matched.incident);
+    evidence = memberRows.filter((r) => !matched.linked.has(Number(r.id)) && Number(r.created_at) > since);
+    recurrenceOf = Number(matched.incident.id);
+    if (evidence.length < threshold || distinctRequesters(evidence) < Math.min(threshold, MIN_DISTINCT_REQUESTERS)) {
+      return { suppressed: true, incidentId: matched.incident.id, status: matched.incident.status };
+    }
+  }
+
+  const startedAt = Math.min(...evidence.map((r) => Number(r.created_at)));
+  const { incidentId, title } = insertCandidate({
+    programId,
+    representative: String(evidence[0].question || ""),
+    memberRows: evidence,
+    windowMs,
+    startedAt,
+    now,
+    recurrenceOf,
+  });
+  linkRowsToIncident(incidentId, evidence, programId, now);
+  recordIncidentAudit({ id: incidentId, program_id: programId }, "incident.detected", null, {
+    tickets: evidence.length,
+    requesters: distinctRequesters(evidence),
+    windowMinutes: Math.round(windowMs / 60000),
+    ticketIds: evidence.slice(0, AUDIT_TICKET_SAMPLE).map((r) => Number(r.id)),
+    recurrenceOf,
+  });
+  return { incidentId, title, status: "candidate", linked: evidence.length, deduped: false };
+}
+
 function detectBursts({
   programId,
   windowMs = INCIDENT_WINDOW_MS,
@@ -431,31 +580,29 @@ function detectBursts({
   if (!programId) return { error: "programId required" };
   const now = Date.now();
   const rows = fetchRecentTickets(programId, now - windowMs);
-  if (rows.length < threshold) return { candidates: [] };
+  if (rows.length < threshold) return { candidates: [], suppressed: [] };
 
   const groups = incidentClusterQuestions(rows.map((r) => String(r.question || "")));
   const questionIndex = buildQuestionIndex(rows);
   const used = new Set<number>();
-  const out: Row[] = [];
+  const candidates: Row[] = [];
+  const suppressed: Row[] = [];
+  const minRequesters = Math.min(threshold, MIN_DISTINCT_REQUESTERS);
   for (const members of groups) {
     if (members.length < threshold) continue;
-    const memberRows = resolveBurstMembers(rows, members, questionIndex, used);
-    if (memberRows.length < threshold) continue;
-    const startedAt = Math.min(...memberRows.map((r) => Number(r.created_at)));
-    const representative = String(
-      memberRows.sort((a, b) => Number(a.created_at) - Number(b.created_at))[0].question || "",
+    const memberRows = resolveBurstMembers(rows, members, questionIndex, used).sort(
+      (a, b) => Number(a.created_at) - Number(b.created_at),
     );
-    const same = findCooldownIncident(fetchLiveIncidents(programId, now), representative);
-    if (same) {
-      const linked = linkRowsToIncident(Number(same.id), memberRows, programId, now);
-      out.push({ incidentId: same.id, title: same.title, status: same.status, linked, deduped: true });
-      continue;
-    }
-    const { incidentId, title } = insertCandidate({ programId, representative, memberRows, windowMs, startedAt, now });
-    linkRowsToIncident(incidentId, memberRows, programId, now);
-    out.push({ incidentId, title, status: "candidate", linked: memberRows.length, deduped: false });
+    if (memberRows.length < threshold || distinctRequesters(memberRows) < minRequesters) continue;
+    // Write lock first, so a second worker sees this one's candidate
+    const settle = db
+      .handle()
+      .transaction(() => settleCluster({ programId, memberRows, threshold, windowMs, now: Date.now() }));
+    const result = settle.immediate();
+    if (!result) continue;
+    (result.suppressed ? suppressed : candidates).push(result);
   }
-  return { candidates: out };
+  return { candidates, suppressed };
 }
 
 function declareIncident({
@@ -471,12 +618,18 @@ function declareIncident({
 }): Row {
   const inc = getIncident(incidentId);
   if (!inc) return { error: "incident not found" };
+  const from = String(inc.status);
+  if (from !== "confirmed" && !TRANSITIONS[from]?.includes("confirmed")) {
+    return { error: `invalid transition: ${from} -> confirmed` };
+  }
   const t = Date.now();
-  db.handle()
+  const res = db
+    .handle()
     .query(
-      "UPDATE program_incidents SET status = 'confirmed', confirmed_at = ?, description = ?, declared_by = ?, public_message = ? WHERE id = ?",
+      "UPDATE program_incidents SET status = 'confirmed', confirmed_at = ?, description = ?, declared_by = ?, public_message = ? WHERE id = ? AND status = ?",
     )
-    .run(t, description || null, actorId, publicMessage || null, incidentId);
+    .run(t, description || null, actorId, publicMessage || null, incidentId, from);
+  if (res.changes === 0) return { error: "incident status changed, reload and retry" };
   const recordAudit = audit.record as (entry: Record<string, unknown>) => unknown;
   recordAudit({
     programId: inc.program_id,
@@ -569,6 +722,15 @@ function recordAffectedReport({
     .query("SELECT 1 FROM incident_reports WHERE incident_id = ? AND channel = ? AND thread_ts = ?")
     .get(incidentId, channel, threadTs);
   if (already) return { ok: true, deduped: true };
+  if (ticketId) {
+    // Only a ticket of this program may join this incident
+    db.handle()
+      .query(
+        `INSERT OR IGNORE INTO incident_tickets (incident_id, ticket_id, program_id, linked_at)
+         SELECT ?, t.id, ?, ? FROM tickets t WHERE t.id = ? AND t.program_id = ?`,
+      )
+      .run(incidentId, programId, Date.now(), ticketId, programId);
+  }
   db.handle()
     .query(
       "INSERT INTO incident_reports (incident_id, program_id, ticket_id, requester_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -609,64 +771,105 @@ async function notifyAffectedUsers({
 }): Promise<Row> {
   const inc = getIncident(incidentId);
   if (!inc) return { error: "incident not found" };
+  if (inc.status !== "resolved") return { error: "incident is not resolved" };
   if (!client) return { error: "slack client unavailable" };
   const prog = programs.get(inc.program_id);
   const pending = affectedReports(incidentId, true, inc.program_id);
   const text = resolutionMessage || defaultResolutionText(String(inc.title || ""));
+  const claim = db.handle().query("UPDATE incident_reports SET notified_at = ? WHERE id = ? AND notified_at IS NULL");
+  const release = db.handle().query("UPDATE incident_reports SET notified_at = NULL WHERE id = ?");
   let notified = 0;
+  let skipped = 0;
   const errors = [];
   for (const r of pending) {
+    // Claim first so a second click cannot message the same thread twice
+    if (claim.run(Date.now(), r.id).changes === 0) continue;
     try {
-      await slackMessages.sendProgramMessage({
+      const sent = await slackMessages.sendProgramMessage({
         client,
         program: prog,
         channel: String(r.channel || ""),
         threadTs: r.thread_ts || null,
         text,
       });
-      db.handle().query("UPDATE incident_reports SET notified_at = ? WHERE id = ?").run(Date.now(), r.id);
+      if (sent?.shadowed) {
+        release.run(r.id);
+        skipped += 1;
+        continue;
+      }
       notified += 1;
     } catch (e: any) {
+      release.run(r.id);
       errors.push({ reportId: r.id, error: e.message });
     }
   }
-  const recordAudit = audit.record as (entry: Record<string, unknown>) => unknown;
-  recordAudit({
-    programId: inc.program_id,
-    actorId,
-    action: "incident.notified_affected",
-    entityType: "incident",
-    entityId: incidentId,
-    metadata: { notified, failed: errors.length },
+  recordIncidentAudit(inc, "incident.notified_affected", actorId, {
+    notified,
+    failed: errors.length,
+    skipped,
+    reasons: errors.slice(0, 5).map((e) => String(e.error).slice(0, 120)),
   });
-  return { ok: true, notified, failed: errors.length, errors };
+  return { ok: true, notified, failed: errors.length, skipped, errors };
+}
+
+// Audit trail for one incident, oldest first
+function timeline(incidentId: number, programId: string): Row[] {
+  const rows = db
+    .handle()
+    .query(
+      `SELECT id, action, actor_id, metadata, created_at FROM audit_events
+       WHERE program_id = ? AND entity_type = 'incident' AND entity_id = ?
+       ORDER BY created_at ASC, id ASC LIMIT 200`,
+    )
+    .all(programId, String(incidentId)) as Row[];
+  return rows.map((r) => {
+    let metadata: unknown = null;
+    try {
+      metadata = r.metadata ? JSON.parse(String(r.metadata)) : null;
+    } catch (_) {
+      metadata = null;
+    }
+    return { id: r.id, action: r.action, actorId: r.actor_id, at: r.created_at, metadata };
+  });
 }
 
 function setIncidentStatus({
   incidentId,
   status,
   actorId = null,
+  evidence = null,
 }: {
   incidentId: number;
   status: string;
   actorId?: string | null;
+  evidence?: string | null;
 }): Row {
   const inc = getIncident(incidentId);
   if (!inc) return { error: "incident not found" };
   if (!["candidate", "confirmed", "dismissed", "resolved"].includes(status)) return { error: "invalid status" };
+  const from = String(inc.status);
+  if (from === status) return { ok: true, unchanged: true, incident: inc };
+  if (!(TRANSITIONS[from] || []).includes(status)) return { error: `invalid transition: ${from} -> ${status}` };
+  if (status === "resolved" && !actorId) return { error: "resolving an incident needs a named actor" };
   const t = Date.now();
-  const extra = status === "confirmed" ? ", confirmed_at = ?" : status === "resolved" ? ", resolved_at = ?" : "";
-  const params = status === "candidate" || status === "dismissed" ? [status, incidentId] : [status, t, incidentId];
-  db.handle()
-    .query(`UPDATE program_incidents SET status = ?${extra} WHERE id = ?`)
+  const extra =
+    status === "confirmed"
+      ? ", confirmed_at = ?"
+      : status === "resolved"
+        ? ", resolved_at = ?"
+        : status === "dismissed"
+          ? ", dismissed_at = ?"
+          : "";
+  const params = status === "candidate" ? [status, incidentId, from] : [status, t, incidentId, from];
+  // Compare-and-set on the status we validated against
+  const res = db
+    .handle()
+    .query(`UPDATE program_incidents SET status = ?${extra} WHERE id = ? AND status = ?`)
     .run(...params);
-  const recordAudit = audit.record as (entry: Record<string, unknown>) => unknown;
-  recordAudit({
-    programId: inc.program_id,
-    actorId,
-    action: `incident.${status}`,
-    entityType: "incident",
-    entityId: incidentId,
+  if (res.changes === 0) return { error: "incident status changed, reload and retry" };
+  recordIncidentAudit(inc, `incident.${status}`, actorId, {
+    from,
+    ...(evidence ? { evidence: String(evidence).slice(0, 500) } : {}),
   });
   return { ok: true, incident: getIncident(incidentId) };
 }
@@ -687,11 +890,25 @@ function linkTicket({
   db.handle()
     .query("INSERT OR IGNORE INTO incident_tickets (incident_id, ticket_id, program_id, linked_at) VALUES (?, ?, ?, ?)")
     .run(incidentId, ticketId, inc.program_id, Date.now());
+  recordIncidentAudit(inc, "incident.ticket_linked", actorId, { ticketId, source: "manual" });
   return { ok: true };
 }
 
-function unlinkTicket({ incidentId, ticketId }: { incidentId: number; ticketId: number }): Row {
-  db.handle().query("DELETE FROM incident_tickets WHERE incident_id = ? AND ticket_id = ?").run(incidentId, ticketId);
+function unlinkTicket({
+  incidentId,
+  ticketId,
+  actorId = null,
+}: {
+  incidentId: number;
+  ticketId: number;
+  actorId?: string | null;
+}): Row {
+  const inc = getIncident(incidentId);
+  const res = db
+    .handle()
+    .query("DELETE FROM incident_tickets WHERE incident_id = ? AND ticket_id = ?")
+    .run(incidentId, ticketId);
+  if (inc && res.changes > 0) recordIncidentAudit(inc, "incident.ticket_unlinked", actorId, { ticketId });
   return { ok: true };
 }
 
@@ -723,4 +940,6 @@ export = {
   affectedReports,
   notifyAffectedUsers,
   incidentClusterQuestions,
+  recordIncidentAudit,
+  timeline,
 };

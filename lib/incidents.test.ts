@@ -109,6 +109,7 @@ test("notifyAffectedUsers is idempotent and retry-safe: only unnotified reports 
   programs.invalidate();
   const id = makeCandidate("dec-c", "payouts delayed");
   incidents.declareIncident({ incidentId: id, actorId: "U1" });
+  incidents.setIncidentStatus({ incidentId: id, status: "resolved", actorId: "U1" });
   incidents.recordAffectedReport({
     incidentId: id,
     programId: "dec-c",
@@ -169,6 +170,8 @@ test("notifyAffectedUsers never touches another program's reports", async () => 
   const id2 = makeCandidate("dec-d2", "outage two");
   incidents.declareIncident({ incidentId: id1, actorId: "U1" });
   incidents.declareIncident({ incidentId: id2, actorId: "U1" });
+  incidents.setIncidentStatus({ incidentId: id1, status: "resolved", actorId: "U1" });
+  incidents.setIncidentStatus({ incidentId: id2, status: "resolved", actorId: "U1" });
   incidents.recordAffectedReport({
     incidentId: id1,
     programId: "dec-d1",
@@ -291,12 +294,12 @@ test("detectBursts needs 4 similar tickets in window; candidate shape is exact",
   db.saveProgram({ id: prog, name: "BurstT" });
   const q = "checkout is failing for everyone right now";
   for (let i = 0; i < 3; i++) {
-    db.createTicket({ programId: prog, channel: "C-b", threadTs: `char-bt-${i}`, requesterId: "U1", question: q });
+    db.createTicket({ programId: prog, channel: "C-b", threadTs: `char-bt-${i}`, requesterId: `U${i}`, question: q });
   }
   assert.deepEqual(incidents.detectBursts({ programId: prog }).candidates, []);
   assert.equal(incidents.detectBursts({}).error, "programId required");
 
-  db.createTicket({ programId: prog, channel: "C-b", threadTs: "char-bt-3", requesterId: "U1", question: q });
+  db.createTicket({ programId: prog, channel: "C-b", threadTs: "char-bt-3", requesterId: "U3", question: q });
   const out = incidents.detectBursts({ programId: prog });
   assert.equal(out.candidates.length, 1);
   const c = out.candidates[0];
@@ -314,9 +317,9 @@ test("detectBursts needs 4 similar tickets in window; candidate shape is exact",
 test("detectBursts honors explicit threshold and windowMs", () => {
   const prog = "char-burst-params";
   db.saveProgram({ id: prog, name: "BurstP" });
-  const q = "alpha beta gamma delta epsilon zeta";
+  const q = "alpha beta gamma delta epsilon zeta delayed";
   for (let i = 0; i < 2; i++) {
-    db.createTicket({ programId: prog, channel: "C-b", threadTs: `char-bp-${i}`, requesterId: "U1", question: q });
+    db.createTicket({ programId: prog, channel: "C-b", threadTs: `char-bp-${i}`, requesterId: `U${i}`, question: q });
   }
   const out = incidents.detectBursts({ programId: prog, threshold: 2 });
   assert.equal(out.candidates.length, 1);
@@ -333,7 +336,7 @@ test("detectBursts ignores tickets older than the window", () => {
       programId: prog,
       channel: "C-b",
       threadTs: `char-bw-${i}`,
-      requesterId: "U1",
+      requesterId: `U${i}`,
       question: q,
     });
     db.handle()
@@ -348,7 +351,7 @@ test("detectBursts cooldown links into the live incident instead of opening a se
   db.saveProgram({ id: prog, name: "BurstC" });
   const q = "payouts delayed for everyone right now";
   for (let i = 0; i < 4; i++) {
-    db.createTicket({ programId: prog, channel: "C-b", threadTs: `char-bc-${i}`, requesterId: "U1", question: q });
+    db.createTicket({ programId: prog, channel: "C-b", threadTs: `char-bc-${i}`, requesterId: `U${i}`, question: q });
   }
   const first = incidents.detectBursts({ programId: prog });
   assert.equal(first.candidates.length, 1);
@@ -368,7 +371,13 @@ test("detectBursts is program-isolated", () => {
   db.saveProgram({ id: progB, name: "IsoB" });
   const q = "isolated burst wording checkout failing now";
   for (let i = 0; i < 4; i++) {
-    db.createTicket({ programId: progA, channel: "C-b", threadTs: `char-iso-a-${i}`, requesterId: "U1", question: q });
+    db.createTicket({
+      programId: progA,
+      channel: "C-b",
+      threadTs: `char-iso-a-${i}`,
+      requesterId: `U${i}`,
+      question: q,
+    });
   }
   db.createTicket({ programId: progB, channel: "C-b", threadTs: "char-iso-b-0", requesterId: "U1", question: q });
   const outA = incidents.detectBursts({ programId: progA });
@@ -551,6 +560,8 @@ test("notifyAffectedUsers contract — errors, messages, filter, audit", async (
   programs.invalidate();
   const id = makeCandidate(prog, "checkout broken now");
   incidents.declareIncident({ incidentId: id, actorId: "U1" });
+  assert.equal((await incidents.notifyAffectedUsers({ incidentId: id, client: {} })).error, "incident is not resolved");
+  incidents.setIncidentStatus({ incidentId: id, status: "resolved", actorId: "U1" });
   assert.equal(
     (await incidents.notifyAffectedUsers({ incidentId: 999999999, client: {} })).error,
     "incident not found",

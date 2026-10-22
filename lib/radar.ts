@@ -65,6 +65,7 @@ interface SourceHealthRow {
   last_success_at: number | null;
 }
 interface IncidentCandidate {
+  status?: string;
   title: string;
   linked: number;
   incidentId: number;
@@ -609,6 +610,8 @@ function detectIncidentSignals(programId: string): RadarFinding[] {
     detected = { candidates: [] };
   }
   for (const c of (detected.candidates || []) as IncidentCandidate[]) {
+    // A confirmed incident already raises ACTIVE_INCIDENT
+    if (c.status && c.status !== "candidate") continue;
     out.push({
       type: "INCIDENT_CANDIDATE",
       severity: "MEDIUM",
@@ -666,6 +669,7 @@ function evaluateProgram(programId: string): { error: string } | { signals: Arra
 
 function startRadarLoop(
   intervalMin = Number(process.env.PIXIE_RADAR_CHECK_MIN || RADAR_LOOP_DEFAULT_MIN),
+  client: unknown = null,
 ): ReturnType<typeof setInterval> | null {
   if (!intervalMin || intervalMin <= 0) return null;
   const log = require("./log");
@@ -682,6 +686,7 @@ function startRadarLoop(
             } catch (e) {
               log.warn("radar", `evaluate failed for ${prog.id}: ${e instanceof Error ? e.message : String(e)}`);
             }
+            await require("./incidentAlerts").dispatch({ client, programId: prog.id });
           }
         })
         .catch((e: unknown) => log.error("radar", `loop failed: ${e instanceof Error ? e.message : String(e)}`));

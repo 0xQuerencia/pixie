@@ -89,7 +89,7 @@ async function startBot() {
     log.error("sla", "loop failed to start:", errorText(e));
   }
   try {
-    require("./lib/radar").startRadarLoop();
+    require("./lib/radar").startRadarLoop(undefined, app.client);
   } catch (e) {
     log.error("radar", "loop failed to start:", errorText(e));
   }

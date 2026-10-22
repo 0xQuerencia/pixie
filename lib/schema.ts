@@ -451,6 +451,17 @@ const MIGRATIONS = [
   ["program_incidents", "description", "ALTER TABLE program_incidents ADD COLUMN description TEXT"],
   ["program_incidents", "declared_by", "ALTER TABLE program_incidents ADD COLUMN declared_by TEXT"],
   ["program_incidents", "public_message", "ALTER TABLE program_incidents ADD COLUMN public_message TEXT"],
+  ["program_incidents", "dismissed_at", "ALTER TABLE program_incidents ADD COLUMN dismissed_at INTEGER"],
+  ["program_incidents", "alerted_at", "ALTER TABLE program_incidents ADD COLUMN alerted_at INTEGER"],
+  ["program_incidents", "alert_claimed_at", "ALTER TABLE program_incidents ADD COLUMN alert_claimed_at INTEGER"],
+  ["program_incidents", "alert_ticket_count", "ALTER TABLE program_incidents ADD COLUMN alert_ticket_count INTEGER"],
+  [
+    "program_incidents",
+    "alert_attempts",
+    "ALTER TABLE program_incidents ADD COLUMN alert_attempts INTEGER NOT NULL DEFAULT 0",
+  ],
+  ["program_incidents", "alert_next_at", "ALTER TABLE program_incidents ADD COLUMN alert_next_at INTEGER"],
+  ["program_incidents", "alert_error", "ALTER TABLE program_incidents ADD COLUMN alert_error TEXT"],
 
   [
     "programs",
