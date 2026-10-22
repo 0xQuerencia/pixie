@@ -6,6 +6,7 @@ const lease = require("./jobLease") as typeof import("./jobLease");
 const watcher = require("./resolutionWatcher") as unknown as TestResolutionWatcher;
 
 let sequence = 0;
+const EVIDENCE = { ref: "m3", index: 2, role: "requester", userId: "U-REQUESTER", ts: "3" };
 
 function setupProgram(extra = {}) {
   const id = `auto-${++sequence}`;
@@ -81,7 +82,13 @@ test("resolved judgement uses canonical resolve, credits the helper, and schedul
   const out = await watcher.judgeTicket(ticket.id, {
     client,
     program,
-    judge: async () => ({ verdict: "resolved", confidence: 0.91, reason: "requester confirmed the fix" }),
+    judge: async () => ({
+      verdict: "resolved",
+      confidence: 0.91,
+      reason: "requester confirmed the fix",
+      reasonCode: "resolved:requester",
+      evidence: EVIDENCE,
+    }),
   });
   const resolved = db.getTicket(ticket.id);
   const event = db.listTicketEvents(ticket.id).find((row) => row.event_type === "resolved");
@@ -94,6 +101,8 @@ test("resolved judgement uses canonical resolve, credits the helper, and schedul
     verdict: "resolved",
     confidence: 0.91,
     reason: "requester confirmed the fix",
+    reasonCode: "resolved:requester",
+    evidence: EVIDENCE,
   });
   assert.equal(event.actor_id, null);
   assert.equal(resolved.resolved_credit_id, "U-HELPER");
@@ -101,7 +110,7 @@ test("resolved judgement uses canonical resolve, credits the helper, and schedul
 
 test("unresolved, low confidence, no answer, Jev errors, and disabled programs do not resolve", async () => {
   const cases = [
-    [{ verdict: "unresolved", confidence: 0.99 }, "decision"],
+    [{ verdict: "still_open", confidence: 0.99 }, "decision"],
     [{ verdict: "resolved", confidence: 0.79 }, "decision"],
     [null, "no-answer"],
     [{ verdict: "unknown" }, "error"],
@@ -168,7 +177,12 @@ test("dashboard-only tickets stay silent and visible tickets only reconcile exis
       ],
       posts,
     ),
-    judge: async () => ({ verdict: "resolved", confidence: 0.95, reason: "helper completed the fix" }),
+    judge: async () => ({
+      verdict: "resolved",
+      confidence: 0.95,
+      reason: "helper completed the fix",
+      evidence: EVIDENCE,
+    }),
   });
   assert.equal(db.getTicket(silentTicket.id).status, "resolved");
   assert.equal(posts.length, 0);
@@ -190,7 +204,12 @@ test("dashboard-only tickets stay silent and visible tickets only reconcile exis
       [],
       updates,
     ),
-    judge: async () => ({ verdict: "resolved", confidence: 0.95, reason: "helper completed the fix" }),
+    judge: async () => ({
+      verdict: "resolved",
+      confidence: 0.95,
+      reason: "helper completed the fix",
+      evidence: EVIDENCE,
+    }),
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(updates.some((update) => update.ts === "card"));
@@ -301,7 +320,7 @@ test("a historical (backlog) resolve is dated to the thread's last message and s
       client,
       program,
       historical: true,
-      judge: async () => ({ verdict: "resolved", confidence: 0.95, reason: "confirmed" }),
+      judge: async () => ({ verdict: "resolved", confidence: 0.95, reason: "confirmed", evidence: EVIDENCE }),
     });
   } finally {
     pipeline.schedule = original;
@@ -337,7 +356,7 @@ test("auto-resolve still works and credits the helper after that helper has left
     await watcher.judgeTicket(ticket.id, {
       client,
       program,
-      judge: async () => ({ verdict: "resolved", confidence: 0.95, reason: "confirmed" }),
+      judge: async () => ({ verdict: "resolved", confidence: 0.95, reason: "confirmed", evidence: EVIDENCE }),
     });
   } finally {
     watcher.stop();

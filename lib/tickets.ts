@@ -10,6 +10,7 @@ import incidentsModule = require("./incidents");
 import assignmentLifecycleModule = require("./assignmentLifecycle");
 import ticketCategoryModule = require("./ticketCategory");
 import resolutionPipelineModule = require("./resolutionPipeline");
+import resolutionPolicy = require("./resolutionPolicy");
 import handoffContextModule = require("./handoffContext");
 import policy = require("./tickets/policy");
 import type { ChannelRole, Program, SlackClient, Ticket } from "./types";
@@ -1656,6 +1657,42 @@ function noteHelperEngaged({
   }
 }
 
+function reopenForRequester({
+  ticket,
+  userId,
+  client = null,
+  prog = null,
+  rule,
+  detail = {},
+}: {
+  ticket: Ticket;
+  userId: string;
+  client?: SlackClient | null;
+  prog?: Program | null;
+  rule: string;
+  detail?: Record<string, unknown>;
+}): Ticket {
+  if (!db.reopenResolvedTicket(ticket.id, userId)) return db.getTicket(ticket.id);
+  const updated = db.getTicket(ticket.id);
+  recordTransition(updated, userId, "reopened", { by: "requester", rule, ...detail });
+  startNewEpoch(updated);
+  log.info("tickets", `reopened ticket #${ticket.id} (${rule})`);
+  const currentProg = programs.get(ticket.program_id);
+  void reconcileTicketUI({ client, ticket: updated, program: prog, cardText: `[Ticket #${updated.id}] Reopened` });
+  if (client?.chat?.postMessage && !programs.isShadow(currentProg)) {
+    void slackMessages
+      .sendProgramMessage({
+        client,
+        program: currentProg,
+        channel: updated.channel,
+        threadTs: updated.thread_ts,
+        text: reply.plainDashes(`Ticket reopened by <@${userId}>.`),
+      })
+      .catch((e) => log.debug("tickets", `reopen notice failed for #${updated.id}: ${errorMessage(e)}`));
+  }
+  return updated;
+}
+
 function noteThreadActivity({
   channel,
   threadTs,
@@ -1685,24 +1722,18 @@ function noteThreadActivity({
   let updated = ticket;
   if (CLOSED.includes(ticket.status)) {
     if (userId !== ticket.requester_id) return ticket;
-    if (!db.reopenResolvedTicket(ticket.id, userId)) return db.getTicket(ticket.id);
-    updated = db.getTicket(ticket.id);
-    recordTransition(updated, userId, "reopened", { by: "requester" });
-    startNewEpoch(updated);
-    log.info("tickets", `reopened ticket #${ticket.id} on requester activity`);
-    const currentProg = programs.get(ticket.program_id);
-    void reconcileTicketUI({ client, ticket: updated, program: prog, cardText: `[Ticket #${updated.id}] Reopened` });
-    if (client?.chat?.postMessage && !programs.isShadow(currentProg)) {
-      void slackMessages
-        .sendProgramMessage({
-          client,
-          program: currentProg,
-          channel: updated.channel,
-          threadTs: updated.thread_ts,
-          text: reply.plainDashes(`Ticket reopened by <@${userId}>.`),
-        })
-        .catch((e) => log.debug("tickets", `reopen notice failed for #${updated.id}: ${errorMessage(e)}`));
+    const kind = resolutionPolicy.followUpKind(text);
+    // A thank-you or a confirmation is not a reason to reopen; only evidence is
+    if (kind === "ack" || kind === "confirm" || !text?.trim()) return ticket;
+    if (kind === "other") {
+      try {
+        require("./resolutionWatcher").schedule({ ticketId: ticket.id, client, program: prog });
+      } catch (e) {
+        log.debug("tickets", `resolution watcher schedule failed for #${ticket.id}: ${errorMessage(e)}`);
+      }
+      return ticket;
     }
+    return reopenForRequester({ ticket, userId, client, prog, rule: "requester_reports_persists" });
   }
   try {
     require("./resolutionWatcher").schedule({ ticketId: updated.id, client, program: prog });
@@ -2466,6 +2497,7 @@ export = {
   handOffToHelper,
   pingThreadHelper,
   noteThreadActivity,
+  reopenForRequester,
   getOrganizerChannel,
   getTicketCardDestination,
   claimTicket,
