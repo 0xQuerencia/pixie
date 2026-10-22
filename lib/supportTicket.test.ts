@@ -355,7 +355,13 @@ test("the requester writing back in a resolved thread reopens it and re-shows th
   assert.equal(db.getTicket(id).status, "resolved");
 
   const c2 = clientSpy();
-  const out = tickets.noteThreadActivity({ channel: HELP, threadTs: "t-reopen-chat", userId: "U-rc", client: c2 });
+  const out = tickets.noteThreadActivity({
+    channel: HELP,
+    threadTs: "t-reopen-chat",
+    userId: "U-rc",
+    client: c2,
+    text: "it is still broken",
+  });
   await new Promise((r) => setImmediate(r));
 
   assert.equal(out.status, "reopened");
