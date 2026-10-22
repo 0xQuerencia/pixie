@@ -6,6 +6,8 @@ import programModel = require("./programModel");
 import resolutionJudge = require("./resolutionJudge");
 import jobLease = require("./jobLease");
 import lastWord = require("./lastWord");
+import resolutionPolicy = require("./resolutionPolicy");
+import eligibility = require("./eligibility");
 import configModule = require("./config");
 import type { Program } from "./types";
 
@@ -50,7 +52,11 @@ interface Detail {
 
 interface Client {
   conversations?: {
-    replies?: (args: Record<string, unknown>) => Promise<{ messages: Row[] }>;
+    replies?: (args: Record<string, unknown>) => Promise<{
+      messages: Row[];
+      has_more?: boolean;
+      response_metadata?: { next_cursor?: string };
+    }>;
   };
 }
 
@@ -80,6 +86,9 @@ const SWEEP_SPACING_MS = 20 * 1000;
 const STARTUP_SWEEP_DELAY_MS = 10 * 60 * 1000;
 const JEV_BACKOFF_MS = 15 * 60 * 1000;
 const SWEEP_MAX_EXAMINED = 40;
+const THREAD_PAGES = 5;
+const ESCALATE_CONFIDENCE = 0.8;
+const REOPEN_VERDICTS = new Set(["still_open", "needs_clarification", "escalate"]);
 const SWEEP_EXAMINE_SPACING_MS = 3000;
 const BACKOFF_ERRORS = new Set(["rate_limit", "quota"]);
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -184,8 +193,20 @@ function fallbackTranscript(ticket: Row): TranscriptRow[] {
 async function fetchTranscript(ticket: Row, client: Client | null): Promise<TranscriptRow[]> {
   if (client?.conversations?.replies) {
     try {
-      const result = await client.conversations.replies({ channel: ticket.channel, ts: ticket.thread_ts, limit: 100 });
-      return normalizeSlackMessages(result.messages || [], ticket);
+      const messages: Row[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < THREAD_PAGES; page += 1) {
+        const result = await client.conversations.replies({
+          channel: ticket.channel,
+          ts: ticket.thread_ts,
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        });
+        messages.push(...(result.messages || []));
+        cursor = result.response_metadata?.next_cursor;
+        if (!result.has_more || !cursor) break;
+      }
+      return normalizeSlackMessages(messages, ticket);
     } catch (error: unknown) {
       log.debug("resolution", `thread fetch failed for #${ticket.id}: ${errorMessage(error)}`);
     }
@@ -208,13 +229,20 @@ function wasJudged(ticketId: number, messageKey: string): boolean {
   );
 }
 
-function recordJudgement(ticket: Row, messageKey: string, decision: JudgeResult): void {
+function recordJudgement(ticket: Row, messageKey: string, decision: JudgeResult, gate: string | null = null): void {
   const addTicketEvent = db.addTicketEvent as (event: Record<string, unknown>) => unknown;
   addTicketEvent({
     ticketId: ticket.id,
     programId: ticket.program_id,
     eventType: "resolution_judged",
-    detail: { messageKey, verdict: decision.verdict, confidence: decision.confidence ?? null },
+    detail: {
+      messageKey,
+      verdict: decision.verdict,
+      confidence: decision.confidence ?? null,
+      reasonCode: decision.reasonCode ?? null,
+      evidence: decision.evidence?.ref ?? null,
+      gate,
+    },
   });
 }
 
@@ -247,6 +275,90 @@ function lastMessageAt(transcript: TranscriptRow[]): number | null {
   return latest;
 }
 
+// Deterministic checks on a resolution the judge proposed; the first failure names why it was not applied
+function resolutionGate(
+  ticket: Row,
+  transcript: TranscriptRow[],
+  decision: JudgeResult,
+  policy: ReturnType<typeof resolutionPolicy.closurePolicy>,
+): string | null {
+  if (!policy.auto) return "policy_manual";
+  const evidence = decision.evidence;
+  if (!evidence) return "no_evidence";
+  if (Number(decision.confidence) < policy.minConfidence) return "low_confidence";
+  const row = transcript[evidence.index];
+  if (!row || row.role !== evidence.role || !policy.evidenceRoles.includes(row.role)) return "evidence_role";
+  if (row.role === "requester" && row.userId !== ticket.requester_id) return "evidence_role";
+  const firstAnswer = transcript.findIndex((entry) => entry.role === "pixie" || entry.role === "helper");
+  if (firstAnswer < 0 || evidence.index <= firstAnswer) return "evidence_before_answer";
+  const kind = resolutionPolicy.followUpKind(row.text);
+  if (kind === "persists") return "evidence_persists";
+  if (!policy.ackOk && kind !== "confirm") return "needs_explicit_confirmation";
+  const later = transcript.slice(evidence.index + 1);
+  if (later.some((entry) => entry.role === "requester" && resolutionPolicy.followUpKind(entry.text) === "persists")) {
+    return "contradicted";
+  }
+  const helperInvolved =
+    transcript.some((entry) => entry.role === "helper") ||
+    (db.listTicketEvents(ticket.id) as Row[]).some((event: Row) => event.event_type === "helper_reply");
+  if (policy.needsHelper && !helperInvolved) return "needs_human_involvement";
+  return null;
+}
+
+function closeoutPolicy(ticket: Row, prog: Row | Program | null) {
+  return resolutionPolicy.closurePolicy({
+    category: typeof ticket.category === "string" ? ticket.category : null,
+    sensitive: eligibility.sensitiveHit(String(ticket.question || ""), prog as Program | null),
+  });
+}
+
+async function reassessClosed(
+  ticket: Row,
+  prog: Row | Program | null,
+  { client, judge }: { client: Client | null; judge: Judge },
+): Promise<Row> {
+  const transcript = await fetchTranscript(ticket, client);
+  const last = transcript.at(-1);
+  if (!last || last.role !== "requester" || last.userId !== ticket.requester_id) return { skipped: true };
+  const lastAt = lastMessageAt([last]);
+  if (!lastAt || lastAt <= Number(ticket.resolved_at || 0)) return { skipped: true, reason: "not_after_resolution" };
+  const kind = resolutionPolicy.followUpKind(last.text);
+  if (kind === "ack" || kind === "confirm") return { skipped: true, reason: "no_new_issue" };
+  const messageKey = lastMessageKey(transcript);
+  if (wasJudged(ticket.id, messageKey)) return { skipped: true, reason: "already_judged" };
+  const tickets = require("./tickets");
+  const reopen = (rule: string, detail: Record<string, unknown> = {}) =>
+    tickets.reopenForRequester({ ticket, userId: ticket.requester_id, client, prog, rule, detail });
+  if (kind === "persists") {
+    recordJudgement(ticket, messageKey, { verdict: "persists_rule" });
+    return { reopened: reopen("requester_reports_persists") };
+  }
+  if (!autoResolveEnabled(ticket, prog) || Date.now() < backoffUntil) return { skipped: true };
+  let decision: JudgeResult;
+  try {
+    decision = await judge({ ticket, transcript });
+  } catch (_) {
+    decision = { verdict: "unknown" };
+  }
+  if (decision.verdict === "unknown") return { decision };
+  recordJudgement(ticket, messageKey, decision);
+  const evidence = decision.evidence;
+  const row = evidence ? transcript[evidence.index] : null;
+  const evidenceAt = row ? lastMessageAt([row]) : null;
+  const proven =
+    REOPEN_VERDICTS.has(decision.verdict) &&
+    Number(decision.confidence) >= ESCALATE_CONFIDENCE &&
+    row?.role === "requester" &&
+    row.userId === ticket.requester_id &&
+    evidenceAt !== null &&
+    evidenceAt > Number(ticket.resolved_at || 0);
+  if (!proven) return { decision };
+  return {
+    decision,
+    reopened: reopen("jev_reassessment", { verdict: decision.verdict, reasonCode: decision.reasonCode }),
+  };
+}
+
 async function judgeTicketOnce(
   ticketId: number,
   {
@@ -259,16 +371,22 @@ async function judgeTicketOnce(
 ): Promise<Row> {
   let ticket = db.getTicket(ticketId);
   const prog = program || (ticket && programs.get(ticket.program_id));
+  if (ticket && ["resolved", "closed"].includes(ticket.status) && !historical) {
+    return reassessClosed(ticket, prog, { client, judge });
+  }
   if (!ticket || !openStatus(ticket.status) || !autoResolveEnabled(ticket, prog)) return { skipped: true };
   if (Date.now() < backoffUntil) return { skipped: true, reason: "backoff" };
   const transcript = await fetchTranscript(ticket, client);
-  const helperLast = lastWord.helperLastWord({
-    programId: ticket.program_id,
-    requesterId: ticket.requester_id,
-    threadTs: ticket.thread_ts,
-    rows: transcript.map((row) => ({ ts: row.ts, userId: row.userId, isBot: row.role === "pixie" })),
-    now,
-  });
+  const policy = closeoutPolicy(ticket, prog);
+  const helperLast = policy.lastWord
+    ? lastWord.helperLastWord({
+        programId: ticket.program_id,
+        requesterId: ticket.requester_id,
+        threadTs: ticket.thread_ts,
+        rows: transcript.map((row) => ({ ts: row.ts, userId: row.userId, isBot: row.role === "pixie" })),
+        now,
+      })
+    : null;
   if (helperLast) {
     const tickets = require("./tickets");
     const result = tickets.resolveTicket({
@@ -314,8 +432,12 @@ async function judgeTicketOnce(
     );
     return { decision, skipped: true, reason: "backoff" };
   }
-  recordJudgement(ticket, messageKey, decision);
-  if (decision.verdict !== "resolved" || Number(decision.confidence) < RESOLUTION_CONFIDENCE) return { decision };
+  // An unavailable or garbled judge says nothing about the thread, so the message stays unjudged
+  if (decision.verdict === "unknown") return { decision };
+  const gate = decision.verdict === "resolved" ? resolutionGate(ticket, transcript, decision, policy) : null;
+  recordJudgement(ticket, messageKey, decision, gate);
+  if (decision.verdict === "escalate") return escalate(ticket, prog, decision, { client });
+  if (decision.verdict !== "resolved" || gate) return { decision, ...(gate ? { gate } : {}) };
   ticket = db.getTicket(ticket.id);
   if (!ticket || !openStatus(ticket.status) || recentClaimWithoutReply(ticket, now))
     return { skipped: true, reason: "ticket_changed" };
@@ -333,6 +455,8 @@ async function judgeTicketOnce(
       verdict: decision.verdict,
       confidence: decision.confidence,
       reason,
+      reasonCode: decision.reasonCode,
+      evidence: decision.evidence,
       ...(historical ? { lane: "backlog" } : {}),
     },
     resolvedAt: lastMessageAt(transcript),
@@ -342,6 +466,38 @@ async function judgeTicketOnce(
     program: prog,
   });
   return { decision, result };
+}
+
+// Handing a ticket to a person is the only action an unresolved verdict may take
+async function escalate(
+  ticket: Row,
+  prog: Row | Program | null,
+  decision: JudgeResult,
+  { client }: { client: Client | null },
+): Promise<Row> {
+  const fresh = db.getTicket(ticket.id);
+  const evidence = decision.evidence;
+  if (
+    !fresh ||
+    !["open", "reopened"].includes(fresh.status) ||
+    Number(decision.confidence) < ESCALATE_CONFIDENCE ||
+    evidence?.role !== "requester"
+  ) {
+    return { decision };
+  }
+  await require("./tickets").handOffToHelper({
+    ticket: fresh,
+    client,
+    program: prog,
+    channel: fresh.channel,
+    threadTs: fresh.thread_ts,
+    question: fresh.question,
+    requesterId: fresh.requester_id,
+    workspaceId: fresh.workspace_id,
+    role: "help",
+    handoffReason: `Jev judged the thread needs a person (${decision.reasonCode})`,
+  });
+  return { decision, escalated: true };
 }
 
 function judgeTicket(

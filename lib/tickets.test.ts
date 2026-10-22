@@ -1021,7 +1021,7 @@ test("getOrCreate sequential race returns one row, no throw", () => {
   assert.equal(n, 1);
 });
 
-test("requester chatter on resolved reopens and bumps reopen_count", () => {
+test("the requester reporting the problem persists on a resolved ticket reopens it and bumps reopen_count", () => {
   const id = db.createTicket({
     programId: "char-req-re",
     workspaceId: "WS-CHAR",
@@ -1037,6 +1037,7 @@ test("requester chatter on resolved reopens and bumps reopen_count", () => {
     threadTs: "char-req-re-1",
     userId: "U-req-char",
     workspaceId: "WS-CHAR",
+    text: "it's still not working",
   });
   assert.equal(out.status, "reopened");
   assert.equal(db.getTicket(id).reopen_count, 1);
@@ -2045,7 +2046,13 @@ test("[epoch] resolved then a normal follow-up reopens the ticket but does not a
   assert.equal(posts.filter((p) => /could you take a look/.test(p.text)).length, 1);
 
   tickets.resolveTicket({ ticketId: ticket.id, actorId: "U-HELPER", programId: "epoch-resolved" });
-  tickets.noteThreadActivity({ channel: "C-epoch-resolved", threadTs: "t-epoch-resolved", userId: "U-req", client });
+  tickets.noteThreadActivity({
+    channel: "C-epoch-resolved",
+    threadTs: "t-epoch-resolved",
+    userId: "U-req",
+    client,
+    text: "still broken",
+  });
 
   assert.equal(db.getTicket(ticket.id).status, "reopened");
   assert.equal(
