@@ -274,6 +274,8 @@ function stripMarkup(line: string) {
     .replace(/\s*\|\s*/g, ". ")
     .replace(/^\s*(?:[-*•]|\d+[.)])\s+/, "")
     .replace(/[`*_]{1,3}/g, "")
+    .replace(/(?<![\w:]):[a-z][a-z0-9_+'-]{1,30}:(?![\w:])/gi, " ")
+    .replace(/\s{2,}/g, " ")
     .trim();
 }
 
