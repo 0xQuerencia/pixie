@@ -115,10 +115,6 @@ function markNotified(threadKey: string, blame: string[] = []): void {
   notices.set(threadKey, { at: Date.now(), blame: new Set(blame) });
 }
 
-function openKeys(): string[] {
-  return [...circuits.keys()].filter(isOpen);
-}
-
 function reset(): void {
   circuits.clear();
   notices.clear();
@@ -133,7 +129,6 @@ export = {
   httpSeverity,
   isProviderFailure,
   isOpen,
-  openKeys,
   guard,
   noticeDue,
   markNotified,

@@ -230,4 +230,37 @@ test("an unrelated provider recovering does not re-arm the notice for the still-
   expect(handoffs.length).toBe(0);
 });
 
+test("answer providers recovering releases the thread even while an unrelated provider stays down", async () => {
+  const call = (name: string) =>
+    llm.complete(
+      {
+        baseUrl: base(name),
+        apiKey: "k",
+        model: `${name}-model`,
+        maxTokens: 5,
+        messages: [{ role: "user", content: "x" }],
+      },
+      name,
+    );
+  await expect(call("other")).rejects.toBeTruthy();
+
+  offset += 20_000;
+  const thread = await ask("can I return my hardware grant?");
+  expect(notices().length).toBe(1);
+
+  // the answer models come back; "other" is never retried and stays broken
+  offset += 2 * health.BASE_COOLDOWN_MS;
+  status.primary = 200;
+  status.secondary = 200;
+  await call("primary");
+  await call("secondary");
+
+  // a later, separate answer outage in the same thread is a new period
+  status.primary = 403;
+  status.secondary = 404;
+  await ask("is it back?", thread);
+  expect(notices().length).toBe(2);
+  expect(handoffs.length).toBe(0);
+});
+
 export {};

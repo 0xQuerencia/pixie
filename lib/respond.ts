@@ -802,11 +802,17 @@ async function respondTurn({
   const tickets = require("./tickets");
   const requireGrounded = process.env.PIXIE_REQUIRE_GROUNDED_ANSWER === "1" || prog?.requireGroundedAnswer;
   const isRootMessage = !messageTs || messageTs === threadTs;
-  const providersDown = [
-    "jev",
-    llm.healthKey(answerModule.selectAnswerTier({ isPing: isAddressed, inHelpChannel })),
-    llm.healthKey(config.intent),
-  ].some((key) => providerHealth.isOpen(key));
+  const answerTier = answerModule.selectAnswerTier({ isPing: isAddressed, inHelpChannel });
+  const providersDown = ["jev", llm.healthKey(answerTier), llm.healthKey(config.intent)].some((key) =>
+    providerHealth.isOpen(key),
+  );
+  // Providers this request depends on for each kind of outage: the model chain, or the reviewers
+  const involvedIn = (source: string): string[] => {
+    if (source !== "answer") return ["jev", llm.healthKey(config.intent)];
+    const chain: string[] = [];
+    for (let tier = answerTier; tier; tier = tier.fallback) chain.push(llm.healthKey(tier));
+    return chain;
+  };
   const supportTicketReady =
     plan.support && isRootMessage && !programs.isShadow(prog) && !providersDown
       ? tickets
@@ -861,7 +867,7 @@ async function respondTurn({
     if (wantsNotice && traced) {
       providerHealth.markNotified(
         outageKey,
-        [...providerHealth.openKeys(), failedProvider].filter((key): key is string => Boolean(key)),
+        involvedIn(source).filter((key) => key === failedProvider || providerHealth.isOpen(key)),
       );
       await publishAndMark({
         silencedBefore,
