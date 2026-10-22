@@ -1418,7 +1418,14 @@ async function checkIncident(options: IncidentCheckOptions): Promise<TicketActio
       await slackMessages.sendProgramMessage({ client, program: prog, channel, threadTs, text });
     }
     if (incidentMode === "ANSWER_AND_TRACK") {
-      incidents.recordAffectedReport({ incidentId: matched.id, programId, requesterId, channel, threadTs });
+      incidents.recordAffectedReport({
+        incidentId: matched.id,
+        programId,
+        ticketId: ticket?.id ?? null,
+        requesterId,
+        channel,
+        threadTs,
+      });
     }
     log.info("tickets", `posted active incident #${matched.id} note to the thread (${programId})`);
     return { done: true, ticket: ticket ? db.getTicket(ticket.id) : null };

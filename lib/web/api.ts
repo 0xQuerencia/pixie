@@ -227,6 +227,7 @@ interface IncidentBody {
   description?: string | null;
   publicMessage?: string | null;
   resolutionMessage?: string | null;
+  evidence?: string | null;
 }
 interface RadarQuery {
   status?: string | null;
@@ -2032,7 +2033,11 @@ function internalIncidentDetail(programId: string, incidentId: number): ApiRespo
   const incidents = require("../incidents");
   const inc = incidents.getIncident(Number(incidentId), programId);
   if (!inc) return { error: "incident not found" };
-  return { incident: inc, tickets: incidents.incidentTickets(Number(incidentId), programId) };
+  return {
+    incident: inc,
+    tickets: incidents.incidentTickets(Number(incidentId), programId),
+    timeline: incidents.timeline(Number(incidentId), programId),
+  };
 }
 
 function internalIncidentDetect(programId: string, body: IncidentBody = {}): ApiResponse {
@@ -2067,7 +2072,11 @@ function internalIncidentAction(incidentId: number, body: IncidentBody = {}): Ap
       actorId: body.actorId || null,
     });
   if (body.action === "unlink")
-    return incidents.unlinkTicket({ incidentId: Number(incidentId), ticketId: Number(body.ticketId) });
+    return incidents.unlinkTicket({
+      incidentId: Number(incidentId),
+      ticketId: Number(body.ticketId),
+      actorId: body.actorId || null,
+    });
   if (body.action === "announcement") return incidents.draftAnnouncement({ incidentId: Number(incidentId) });
   if (body.action === "declare") {
     return incidents.declareIncident({
@@ -2081,6 +2090,7 @@ function internalIncidentAction(incidentId: number, body: IncidentBody = {}): Ap
     incidentId: Number(incidentId),
     status: body.action,
     actorId: body.actorId || null,
+    evidence: body.evidence || null,
   });
 }
 
