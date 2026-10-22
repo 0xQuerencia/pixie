@@ -209,8 +209,8 @@ async function fetchTranscript(
         });
         messages.push(...(result.messages || []));
         cursor = result.response_metadata?.next_cursor;
-        more = Boolean(result.has_more && cursor);
-        if (!more) break;
+        more = Boolean(result.has_more);
+        if (!more || !cursor) break;
       }
       return { rows: normalizeSlackMessages(messages, ticket), complete: !more };
     } catch (error: unknown) {

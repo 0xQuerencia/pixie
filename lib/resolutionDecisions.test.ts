@@ -570,4 +570,27 @@ test("exactly five full pages that end the thread are complete and can still res
   assert.equal(seen, 500);
   assert.equal(incomplete(s.ticket.id), false);
 });
+test("has_more without a usable cursor is incomplete history, not the end of the thread", async () => {
+  for (const cursor of [undefined, ""]) {
+    const s = setup({ category: "advice_how_to" });
+    const messages = thread(s.ticket, ["helper", "Hold reset."], ["req", "that worked, thanks"]);
+    let calls = 0;
+    await watcher.judgeTicket(s.ticket.id, {
+      client: {
+        ...client(messages),
+        conversations: {
+          replies: async () => ({ messages, has_more: true, response_metadata: { next_cursor: cursor } }),
+        },
+      },
+      program: s.program,
+      judge: async () => {
+        calls += 1;
+        return decide("resolved", 0.99, evidenceAt(2))();
+      },
+    });
+    assert.equal(status(s.ticket.id), "open");
+    assert.equal(calls, 0);
+    assert.ok(incomplete(s.ticket.id));
+  }
+});
 export {};
