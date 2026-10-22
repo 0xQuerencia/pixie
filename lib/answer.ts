@@ -826,5 +826,6 @@ export = {
   timelineAuthorityRule,
   stripLeadingSafety,
   looksTruncated,
+  selectAnswerTier,
   retryIfTruncated,
 };

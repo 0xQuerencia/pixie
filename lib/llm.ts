@@ -2,6 +2,7 @@ const axios = require("axios");
 const https = require("https");
 const log = require("./log");
 const db = require("./db");
+const providerHealth = require("./providerHealth");
 const crypto = require("crypto");
 const { AsyncLocalStorage } = require("node:async_hooks");
 import type { ProviderTier } from "./types";
@@ -339,11 +340,19 @@ function describeError(err: LlmError) {
   return err.response?.status || err.cause?.code || err.code || "network";
 }
 
+function healthKey({ baseUrl, model }: { baseUrl?: string; model?: string }) {
+  let host = baseUrl || "";
+  try {
+    host = new URL(host).host;
+  } catch (_error: unknown) {}
+  return `llm:${host}|${model || ""}`;
+}
+
 async function complete(options: CompletionOptions, scope = "llm") {
   const { fallback, ...primary } = options;
 
   try {
-    return await completeAttempts(primary, scope);
+    return await providerHealth.guard(healthKey(primary), () => completeAttempts(primary, scope));
   } catch (error: unknown) {
     const err = toLlmError(error);
     if (!fallback) throw err;
@@ -538,7 +547,7 @@ async function completeStream(
   };
 
   try {
-    return await streamAttempts(primary, track, scope);
+    return await providerHealth.guard(healthKey(primary), () => streamAttempts(primary, track, scope));
   } catch (error: unknown) {
     const err = toLlmError(error);
     if (!fallback || streamedAny) throw err;
@@ -551,6 +560,7 @@ async function completeStream(
 }
 
 export = {
+  healthKey,
   complete,
   completeStream,
   requestCompletion,

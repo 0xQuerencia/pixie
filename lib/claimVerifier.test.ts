@@ -19,13 +19,24 @@ const supportedJudge = async (claims: Array<{ claim: string }>) => ({
 test("non-material chatter is sendable without inventing claims", async () => {
   const result = await claimVerifier.verifyAnswer({
     programId: "program-a",
-    answer: "hey, sorry — ask a helper and I can take a look.",
+    answer: "hey, thanks for asking!",
     evidence: [],
   });
 
   assert.equal(result.sendable, true);
   assert.equal(result.verdict, "supported");
   assert.deepEqual(result.claims, []);
+});
+
+test("handing the question to a person is a deferral, never a verified answer", async () => {
+  const result = await claimVerifier.verifyAnswer({
+    programId: "program-a",
+    answer: "hey, sorry — ask a helper and I can take a look.",
+    evidence: [],
+  });
+
+  assert.equal(result.sendable, false);
+  assert.deepEqual(result.errors, ["deferral"]);
 });
 
 test("a material answer needs one selected same-program evidence record", async () => {
