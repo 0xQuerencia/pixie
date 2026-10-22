@@ -4,6 +4,13 @@ const policy = require("./resolutionPolicy");
 
 const KINDS: Array<[string, string]> = [
   ["Thanks!", "ack"],
+  ["Thanks again!", "ack"],
+  ["thank you again :pray:", "ack"],
+  ["I can't thank you enough", "ack"],
+  ["It's broken again", "persists"],
+  ["Still broken", "persists"],
+  ["Thanks, but it broke again", "persists"],
+  ["That fixed it, thanks", "confirm"],
   ["thx :pray:", "ack"],
   ["ok cool, appreciate it", "ack"],
   ["That worked, thanks", "confirm"],

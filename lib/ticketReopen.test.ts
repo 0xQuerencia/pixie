@@ -30,9 +30,26 @@ afterEach(() => watcher.stop());
 
 test("a thank-you does not reopen a resolved ticket", () => {
   const t = resolvedTicket();
-  for (const text of ["Thanks!", "thx :pray:", "ok cool, appreciate it", "That worked, thanks"]) say(t, text);
+  for (const text of [
+    "Thanks!",
+    "Thanks again!",
+    "I can't thank you enough",
+    "thx :pray:",
+    "ok cool, appreciate it",
+    "That worked, thanks",
+    "That fixed it, thanks",
+  ])
+    say(t, text);
   assert.equal(db.getTicket(t.id).status, "resolved");
   assert.equal(db.getTicket(t.id).reopen_count, 0);
+});
+
+test("'broken again' and 'still broken' reopen a resolved ticket", () => {
+  for (const text of ["It's broken again", "Still broken"]) {
+    const t = resolvedTicket();
+    say(t, text);
+    assert.equal(db.getTicket(t.id).status, "reopened", text);
+  }
 });
 
 test("a message with no text cannot reopen a ticket", () => {

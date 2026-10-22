@@ -469,4 +469,105 @@ test("a long thread: the judge is given the newest messages across Slack pages",
   });
   assert.equal(seen.at(-1)?.text, "NEWEST works now");
 });
+const incomplete = (id: number) =>
+  judged(id).some((e: { detail: string }) => JSON.parse(e.detail).gate === "incomplete_history");
+
+test("history longer than the page limit fails closed: an old confirmation cannot close past a later 'still broken'", async () => {
+  const s = setup({ category: "site_bug", question: "The site shows an error" });
+  const page = (from: number, count: number): Msg[] =>
+    Array.from({ length: count }, (_, i) => ({
+      ts: String(from + i),
+      user: i % 2 ? "U-HELPER" : "U-REQ",
+      text: `chat ${from + i}`,
+    }));
+  const first: Msg[] = [
+    { ts: s.ticket.thread_ts, user: "U-REQ", text: s.ticket.question },
+    { ts: "2", user: "U-HELPER", text: "Clear your cache." },
+    { ts: "3", user: "U-REQ", text: "that fixed it, works now" },
+    ...page(4, 97),
+  ];
+  const pages = [
+    first,
+    page(101, 100),
+    page(201, 100),
+    page(301, 100),
+    page(401, 100),
+    page(501, 100),
+    [{ ts: "999", user: "U-REQ", text: "wait, still broken" }],
+  ];
+  let calls = 0;
+  await watcher.judgeTicket(s.ticket.id, {
+    client: client([], pages),
+    program: s.program,
+    judge: async () => {
+      calls += 1;
+      return decide("resolved", 0.99, evidenceAt(2))();
+    },
+  });
+  assert.equal(status(s.ticket.id), "open");
+  assert.equal(calls, 0, "no judgement is spent on a history known to be partial");
+  assert.ok(incomplete(s.ticket.id));
+});
+
+test("a Slack fetch failure falls back to a partial record and never closes on it", async () => {
+  const s = setup({ category: "advice_how_to" });
+  db.addTicketEvent({
+    ticketId: s.ticket.id,
+    programId: s.program.id,
+    actorId: "U-HELPER",
+    eventType: "helper_reply",
+    detail: { ts: "2", text: "Hold reset." },
+  });
+  db.addTicketEvent({
+    ticketId: s.ticket.id,
+    programId: s.program.id,
+    actorId: "U-REQ",
+    eventType: "requester_followup",
+    detail: { text: "that worked, thanks" },
+  });
+  const broken = {
+    conversations: {
+      replies: async () => {
+        throw new Error("slack is down");
+      },
+    },
+  };
+  let calls = 0;
+  await watcher.judgeTicket(s.ticket.id, {
+    client: broken,
+    program: s.program,
+    judge: async () => {
+      calls += 1;
+      return decide("resolved", 0.99, evidenceAt(2))();
+    },
+  });
+  assert.equal(status(s.ticket.id), "open");
+  assert.equal(calls, 0);
+  assert.ok(incomplete(s.ticket.id));
+});
+
+test("exactly five full pages that end the thread are complete and can still resolve", async () => {
+  const s = setup();
+  const page = (from: number, count: number): Msg[] =>
+    Array.from({ length: count }, (_, i) => ({ ts: String(from + i), user: "U-HELPER", text: `h${from + i}` }));
+  const first: Msg[] = [{ ts: s.ticket.thread_ts, user: "U-REQ", text: s.ticket.question }, ...page(2, 99)];
+  const pages = [
+    first,
+    page(101, 100),
+    page(201, 100),
+    page(301, 100),
+    [...page(401, 99), { ts: "999", user: "U-REQ", text: "that worked" }],
+  ];
+  let seen = 0;
+  await watcher.judgeTicket(s.ticket.id, {
+    client: client([], pages),
+    program: s.program,
+    judge: async ({ transcript }: { transcript: unknown[] }) => {
+      seen = transcript.length;
+      return { verdict: "insufficient_evidence", confidence: 0.5, evidence: null };
+    },
+  });
+  assert.equal(seen, 500);
+  assert.equal(incomplete(s.ticket.id), false);
+});
 export {};

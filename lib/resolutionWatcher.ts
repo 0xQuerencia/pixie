@@ -190,11 +190,16 @@ function fallbackTranscript(ticket: Row): TranscriptRow[] {
   return rows;
 }
 
-async function fetchTranscript(ticket: Row, client: Client | null): Promise<TranscriptRow[]> {
+// complete is false whenever the newest messages might be missing: more pages than we read, or no Slack view at all
+async function fetchTranscript(
+  ticket: Row,
+  client: Client | null,
+): Promise<{ rows: TranscriptRow[]; complete: boolean }> {
   if (client?.conversations?.replies) {
     try {
       const messages: Row[] = [];
       let cursor: string | undefined;
+      let more = false;
       for (let page = 0; page < THREAD_PAGES; page += 1) {
         const result = await client.conversations.replies({
           channel: ticket.channel,
@@ -204,14 +209,15 @@ async function fetchTranscript(ticket: Row, client: Client | null): Promise<Tran
         });
         messages.push(...(result.messages || []));
         cursor = result.response_metadata?.next_cursor;
-        if (!result.has_more || !cursor) break;
+        more = Boolean(result.has_more && cursor);
+        if (!more) break;
       }
-      return normalizeSlackMessages(messages, ticket);
+      return { rows: normalizeSlackMessages(messages, ticket), complete: !more };
     } catch (error: unknown) {
       log.debug("resolution", `thread fetch failed for #${ticket.id}: ${errorMessage(error)}`);
     }
   }
-  return fallbackTranscript(ticket);
+  return { rows: fallbackTranscript(ticket), complete: false };
 }
 
 function lastMessageKey(transcript: TranscriptRow[]): string {
@@ -312,12 +318,23 @@ function closeoutPolicy(ticket: Row, prog: Row | Program | null) {
   });
 }
 
+const INCOMPLETE_KEY = "incomplete-history";
+
+// A history that may be missing its newest messages cannot support closing or reopening anything
+function incompleteHistory(ticket: Row): Row {
+  if (!wasJudged(ticket.id, INCOMPLETE_KEY)) {
+    recordJudgement(ticket, INCOMPLETE_KEY, { verdict: "incomplete_history" }, "incomplete_history");
+  }
+  return { skipped: true, reason: "incomplete_history" };
+}
+
 async function reassessClosed(
   ticket: Row,
   prog: Row | Program | null,
   { client, judge }: { client: Client | null; judge: Judge },
 ): Promise<Row> {
-  const transcript = await fetchTranscript(ticket, client);
+  const { rows: transcript, complete } = await fetchTranscript(ticket, client);
+  if (!complete) return incompleteHistory(ticket);
   const last = transcript.at(-1);
   if (!last || last.role !== "requester" || last.userId !== ticket.requester_id) return { skipped: true };
   const lastAt = lastMessageAt([last]);
@@ -376,7 +393,8 @@ async function judgeTicketOnce(
   }
   if (!ticket || !openStatus(ticket.status) || !autoResolveEnabled(ticket, prog)) return { skipped: true };
   if (Date.now() < backoffUntil) return { skipped: true, reason: "backoff" };
-  const transcript = await fetchTranscript(ticket, client);
+  const { rows: transcript, complete } = await fetchTranscript(ticket, client);
+  if (!complete) return incompleteHistory(ticket);
   const policy = closeoutPolicy(ticket, prog);
   const helperLast = policy.lastWord
     ? lastWord.helperLastWord({

@@ -32,6 +32,8 @@ const ACK_WORDS = new Set([
 
 function followUpKind(text: unknown): FollowUp {
   const body = String(text || "")
+    .replace(/\b(thanks?|thank you|thx|ty)\s+again\b/gi, "$1")
+    .replace(/\b(?:i )?(?:can'?t|cannot) (?:thank|say thanks)[^.!?]*/gi, " thanks ")
     .replace(/<@[A-Z0-9]+>/g, " ")
     .replace(/:[a-z0-9_+-]+:/gi, " ")
     .trim();
