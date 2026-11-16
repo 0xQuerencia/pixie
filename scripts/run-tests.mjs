@@ -45,7 +45,11 @@ function hermeticEnv() {
       key.startsWith("SLACK_") ||
       key.startsWith("JEV_") ||
       key.startsWith("EXPERIENTIAL_") ||
-      key === "DATABASE_URL"
+      key === "DATABASE_URL" ||
+      key === "PIXIE_TEST_ALLOW_NETWORK" ||
+      key === "PIXIE_ANSWER_BASE_URL" ||
+      key === "PIXIE_PING_BASE_URL" ||
+      key === "PIXIE_ANSWER_PROVIDER"
     ) {
       delete env[key];
     }
@@ -119,7 +123,7 @@ async function worker() {
     const status = r.code === 0 ? "PASS" : `FAIL(${r.code})`;
     console.log(`${status} ${r.file} (${r.ms}ms)`);
     if (r.code !== 0) {
-      const tail = r.output.trim().split("\n").slice(-15).join("\n");
+      const tail = r.output.trim().split("\n").slice(-80).join("\n");
       if (tail) console.log(`--- ${r.file} output tail ---\n${tail}\n--- end ---`);
     }
   }

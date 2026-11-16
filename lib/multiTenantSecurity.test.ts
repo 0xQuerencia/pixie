@@ -319,6 +319,8 @@ test("grounded answer and escalation are mutually exclusive (grounded -> no esca
 
   const origGetAnswer = answer.getAnswerOrChatStream;
   const origGetAnswerPlain = answer.getAnswerOrChat;
+  const origIntent = intent.classifyIntent;
+  intent.classifyIntent = async () => intent.HELP_NEEDED;
   answer.getAnswerOrChat = answer.getAnswerOrChatStream = async () => ({
     source: "Official Guidelines",
     answer: "You can resubmit returned projects once fixes are made.",
@@ -383,6 +385,7 @@ test("grounded answer and escalation are mutually exclusive (grounded -> no esca
   } finally {
     answer.getAnswerOrChatStream = origGetAnswer;
     answer.getAnswerOrChat = origGetAnswerPlain;
+    intent.classifyIntent = origIntent;
     db.deleteProgram(prog.id);
     knowledge.invalidate();
   }
