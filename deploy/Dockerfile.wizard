@@ -1,0 +1,9 @@
+FROM oven/bun:1.3.13
+WORKDIR /app
+COPY pixie-wizard/package.json pixie-wizard/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY pixie-wizard/ ./
+RUN bun run build
+ENV NODE_ENV=production
+EXPOSE 4901
+CMD ["bun", "run", "start"]
