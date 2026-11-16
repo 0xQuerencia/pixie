@@ -109,3 +109,17 @@ test("cmd with empty suffix is the bare ask command", () => {
   });
 });
 export {};
+
+test("generated Slack manifest respects configured command prefix and shortcut length", () => {
+  const manifest = require("../scripts/manifest.cjs").manifest;
+  withEnv({ PIXIE_BOT_NAME: "Pixie Reincarnated", PIXIE_BOT_SLUG: "community-helper" }, () => {
+    const rendered = manifest();
+    assert.equal(rendered.features.slash_commands[0].command, "/community-helper");
+    assert.equal(rendered.features.slash_commands[1].command, "/community-helper-check");
+    assert.equal(rendered.features.shortcuts[0].callback_id, "community_helper_teach_thread");
+    assert.ok(rendered.features.shortcuts[0].name.length <= 24);
+  });
+  withEnv({ PIXIE_BOT_NAME: undefined, PIXIE_BOT_SLUG: undefined }, () => {
+    assert.equal(manifest().features.slash_commands[0].command, "/pixie");
+  });
+});
