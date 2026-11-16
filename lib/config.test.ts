@@ -350,7 +350,6 @@ test("refreshIntervalMin is a positive number", () => {
 });
 export {};
 
-
 test("answer and ping provider defaults never require the old private Railway hostname", () => {
   assert.doesNotMatch(config.answer.baseUrl, /pixie\\.railway\\.internal/i);
   assert.doesNotMatch(config.pingAnswer.baseUrl, /pixie\\.railway\\.internal/i);
