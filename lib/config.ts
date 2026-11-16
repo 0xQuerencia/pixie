@@ -257,7 +257,10 @@ const DEFAULT_FALLBACK_MODEL = process.env.PIXIE_ANSWER_BASE_URL ? "ag/gemini-3.
 const allowOffRouter = process.env.PIXIE_ANSWER_ALLOW_FALLBACK === "1";
 
 const nineRouterSecondaryFallbackTier = {
-  apiKey: () => process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY,
+  apiKey: () =>
+    process.env.PIXIE_ANSWER_BASE_URL
+      ? process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY
+      : nextZenApiKey(),
   baseUrl: normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL),
   model: process.env.PIXIE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL,
   fallback: allowOffRouter
@@ -266,7 +269,10 @@ const nineRouterSecondaryFallbackTier = {
 };
 
 const nineRouterAnswerTier = {
-  apiKey: () => process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY,
+  apiKey: () =>
+    process.env.PIXIE_ANSWER_BASE_URL
+      ? process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY
+      : nextZenApiKey(),
   baseUrl: normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL),
   model: process.env.PIXIE_MODEL || DEFAULT_PRIMARY_MODEL,
   fallback:
