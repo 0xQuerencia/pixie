@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pixie
+      POSTGRES_USER: pixie
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in deploy/selfhost.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pixie -d pixie"]
+      interval: 10s
+      retries: 10
+
+  core:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.core
+    restart: unless-stopped
+    env_file: ./selfhost.env
+    environment:
+      PIXIE_DB_PATH: /data/pixie.db
+      PIXIE_WEB_HOST: 0.0.0.0
+      PIXIE_WEB_PORT: 4100
+    volumes:
+      - core-data:/data
+    ports:
+      - "127.0.0.1:4100:4100"
+
+  wizard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.wizard
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: ./selfhost.env
+    environment:
+      NODE_ENV: production
+      PORT: 4901
+      DATABASE_URL: postgresql://pixie:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/pixie
+      PIXIE_CORE_BASE_URL: http://core:4100
+    ports:
+      - "127.0.0.1:4901:4901"
+
+volumes:
+  postgres-data:
+  core-data:
