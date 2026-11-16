@@ -384,7 +384,9 @@ async function handleAuth(req: Request): Promise<Response | null> {
         const expected = process.env.PIXIE_DASHBOARD_PASSCODE?.trim();
         const validPasscode = Boolean(expected && expected.length >= 16);
         const supplied = typeof passcode === "string" ? passcode.trim() : "";
-        const matches = validPasscode && supplied.length === expected!.length &&
+        const matches =
+          validPasscode &&
+          supplied.length === expected!.length &&
           require("crypto").timingSafeEqual(Buffer.from(supplied), Buffer.from(expected!));
         if (matches) {
           const cookieValue = auth.signSession("admin", "Admin", "admin");
