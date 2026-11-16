@@ -527,3 +527,38 @@ test("legacy ticket detail requires a program scope even with the shared bearer"
   }
 });
 export {};
+
+test("legacy console has no default passcode or dev-testing login bypass", async () => {
+  const serve = require("./serve");
+  const savedPasscode = process.env.PIXIE_DASHBOARD_PASSCODE;
+  const savedClientId = process.env.SLACK_CLIENT_ID;
+  try {
+    delete process.env.PIXIE_DASHBOARD_PASSCODE;
+    process.env.SLACK_CLIENT_ID = "dev-testing";
+    const get = await serve.handleRequest(new Request("http://localhost/login"));
+    assert.equal(get.status, 200);
+    assert.equal(get.headers.get("set-cookie"), null);
+    const post = (passcode: string) =>
+      serve.handleRequest(
+        new Request("http://localhost/login", {
+          method: "POST",
+          body: new URLSearchParams({ passcode }),
+        }),
+      );
+    const guessed = await post("pixie");
+    assert.equal(guessed.status, 200);
+    assert.equal(guessed.headers.get("set-cookie"), null);
+    process.env.PIXIE_DASHBOARD_PASSCODE = "pixie";
+    const weak = await post("pixie");
+    assert.equal(weak.headers.get("set-cookie"), null);
+    process.env.PIXIE_DASHBOARD_PASSCODE = "a-long-private-console-password";
+    const accepted = await post("a-long-private-console-password");
+    assert.equal(accepted.status, 302);
+    assert.ok(accepted.headers.get("set-cookie")?.includes("HttpOnly"));
+  } finally {
+    if (savedPasscode === undefined) delete process.env.PIXIE_DASHBOARD_PASSCODE;
+    else process.env.PIXIE_DASHBOARD_PASSCODE = savedPasscode;
+    if (savedClientId === undefined) delete process.env.SLACK_CLIENT_ID;
+    else process.env.SLACK_CLIENT_ID = savedClientId;
+  }
+});

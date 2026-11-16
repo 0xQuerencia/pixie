@@ -90,7 +90,6 @@ function requireAdmin(req: AuthRequest): AuthResult | { session: Session } {
 function isAdminSession(session: Session | null): boolean {
   if (!session) return false;
   if (session.role === "admin" || session.userId === "admin") return true;
-  if (process.env.SLACK_CLIENT_ID === "dev-testing" && session.userId === "dev-user") return true;
   try {
     return isAdmin(session.userId);
   } catch (_) {
@@ -166,7 +165,7 @@ async function handleCallback(req: AuthRequest): Promise<AuthResult> {
     const userName = userData.name || userId;
     const cookieValue = signSession(userId, userName);
 
-    const setCookie = `${COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+    const setCookie = `${COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${process.env.PIXIE_WEB_URL?.startsWith("https://") ? "; Secure" : ""}`;
 
     return {
       status: 302,
