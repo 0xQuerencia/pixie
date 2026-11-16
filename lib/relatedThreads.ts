@@ -217,7 +217,27 @@ const SIMPLE_LOOKUP_PATTERNS = [
 const MIN_SHARED_TOKENS = 2;
 const DEFAULT_THRESHOLD = 0.35;
 const CANDIDATE_LIMIT = 200;
-const SLACK_ARCHIVE_HOST = "https://hackclub.slack.com/archives";
+// Resolve links from trusted operator configuration. Never assume a workspace domain.
+function archiveHost(): string | null {
+  const configured = (process.env.PIXIE_SLACK_WORKSPACE_URL || "").trim();
+  if (!configured) return null;
+  try {
+    const parsed = new URL(configured);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      parsed.search ||
+      parsed.hash ||
+      !/^[a-z0-9-]+\.slack\.com$/.test(parsed.hostname)
+    )
+      return null;
+    return `${parsed.origin}/archives`;
+  } catch {
+    return null;
+  }
+}
 
 function isSimpleLookupQuestion(question: string, answerResult: { direct?: boolean } | null = null) {
   const q = (question || "").trim().toLowerCase();
@@ -263,10 +283,11 @@ function calculateTokenSimilarity(queryTokens: string[], targetTokens: string[])
 }
 
 function buildSlackPermalink(channel: string, threadTs: string) {
-  if (!channel || !threadTs) return null;
-  if (!/^\d+(\.\d+)?$/.test(String(threadTs))) return null;
+  const host = archiveHost();
+  if (!host || !/^[A-Z0-9]{8,}$/.test(String(channel || ""))) return null;
+  if (!/^\d{10,}\.\d{6}$/.test(String(threadTs || ""))) return null;
   const cleanTs = String(threadTs).replace(".", "");
-  return `https://hackclub.slack.com/archives/${channel}/p${cleanTs}`;
+  return `${host}/${channel}/p${cleanTs}`;
 }
 
 async function findRelatedThread(

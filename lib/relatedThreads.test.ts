@@ -33,43 +33,72 @@ test("tokenize cleans text and drops stop words", () => {
   assert.ok(!tokens.includes("the"));
 });
 
-test("buildSlackPermalink generates clean Slack archive URLs", () => {
-  const url = relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819");
-  assert.equal(url, "https://hackclub.slack.com/archives/C0MAIN00001/p1788107539615819");
+test("buildSlackPermalink uses only trusted configured workspace domains", () => {
+  const old = process.env.PIXIE_SLACK_WORKSPACE_URL;
+  try {
+    delete process.env.PIXIE_SLACK_WORKSPACE_URL;
+    assert.equal(relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"), null);
+    process.env.PIXIE_SLACK_WORKSPACE_URL = "https://example.slack.com";
+    assert.equal(
+      relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"),
+      "https://example.slack.com/archives/C0MAIN00001/p1788107539615819",
+    );
+    process.env.PIXIE_SLACK_WORKSPACE_URL = "https://hackclub.slack.com";
+    assert.match(relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"), /hackclub\.slack\.com/);
+    for (const unsafe of [
+      "http://example.slack.com",
+      "https://example.slack.com.evil.test",
+      "https://user@example.slack.com",
+      "https://example.slack.com:8443",
+    ]) {
+      process.env.PIXIE_SLACK_WORKSPACE_URL = unsafe;
+      assert.equal(relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"), null);
+    }
+  } finally {
+    if (old === undefined) delete process.env.PIXIE_SLACK_WORKSPACE_URL;
+    else process.env.PIXIE_SLACK_WORKSPACE_URL = old;
+  }
 });
 
 test("findRelatedThread finds past thread and ignores current active thread", async () => {
-  db.open(":memory:");
-  db.recordAnsweredThread({
-    question: "how to fix a web export error",
-    channel: "C_HELP",
-    threadTs: "1788100100.111111",
-  });
+  const old = process.env.PIXIE_SLACK_WORKSPACE_URL;
+  process.env.PIXIE_SLACK_WORKSPACE_URL = "https://example.slack.com";
+  try {
+    db.open(":memory:");
+    db.recordAnsweredThread({
+      question: "how to fix a web export error",
+      channel: "C0HELP00001",
+      threadTs: "1788100100.111111",
+    });
 
-  const simple = await relatedThreads.findRelatedThread("where is the dashboard", {
-    currentThreadTs: "1788200000.222222",
-    channel: "C_HELP",
-  });
-  assert.equal(simple, null);
+    const simple = await relatedThreads.findRelatedThread("where is the dashboard", {
+      currentThreadTs: "1788200000.222222",
+      channel: "C0HELP00001",
+    });
+    assert.equal(simple, null);
 
-  const selfMatch = await relatedThreads.findRelatedThread("web export error", {
-    currentThreadTs: "1788100100.111111",
-    channel: "C0MAIN00001",
-  });
-  assert.equal(selfMatch, null);
+    const selfMatch = await relatedThreads.findRelatedThread("web export error", {
+      currentThreadTs: "1788100100.111111",
+      channel: "C0MAIN00001",
+    });
+    assert.equal(selfMatch, null);
 
-  const match = await relatedThreads.findRelatedThread("how do i fix the web export error on chrome", {
-    currentThreadTs: "1788200000.222222",
-    channel: "C0MAIN00001",
-  });
-  assert.notEqual(match, null);
-  assert.equal(match.channel, "C_HELP");
-  assert.equal(match.threadTs, "1788100100.111111");
-  assert.ok(match.permalink.includes("p1788100100111111"));
+    const match = await relatedThreads.findRelatedThread("how do i fix the web export error on chrome", {
+      currentThreadTs: "1788200000.222222",
+      channel: "C0MAIN00001",
+    });
+    assert.notEqual(match, null);
+    assert.equal(match.channel, "C0HELP00001");
+    assert.equal(match.threadTs, "1788100100.111111");
+    assert.ok(match.permalink.includes("p1788100100111111"));
 
-  const line = relatedThreads.formatRelatedThreadLine(match);
-  assert.ok(line.includes("Related discussion:"));
-  assert.ok(line.includes("view previous thread"));
+    const line = relatedThreads.formatRelatedThreadLine(match);
+    assert.ok(line.includes("Related discussion:"));
+    assert.ok(line.includes("view previous thread"));
+  } finally {
+    if (old === undefined) delete process.env.PIXIE_SLACK_WORKSPACE_URL;
+    else process.env.PIXIE_SLACK_WORKSPACE_URL = old;
+  }
 });
 
 test("thin token queries never match", async () => {
