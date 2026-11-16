@@ -15,7 +15,8 @@ const DEFAULT_MODEL = "deepseek-v4-flash-free";
 const DEFAULT_VISION_MODEL = "mimo-v2.5-free";
 const DEFAULT_REFRESH_INTERVAL_MIN = 30;
 
-const NINE_ROUTER_BASE_URL = "http://pixie.railway.internal:20128/v1";
+// Default to a public supported provider; private routers remain opt-in via env.
+const NINE_ROUTER_BASE_URL = ZEN_BASE_URL;
 const ANSWER_FALLBACK_MODEL = "gc/gemini-3.1-flash-lite-preview";
 
 const HCAI_BASE_URL = "https://ai.hackclub.com/proxy/v1";
@@ -249,14 +250,17 @@ function nextGroqApiKey() {
   return soonestRecovery(keys, groqCoolingUntil);
 }
 
-const DEFAULT_PRIMARY_MODEL = "kr/claude-sonnet-4.5";
-const DEFAULT_FALLBACK_MODEL = "ag/gemini-3.6-flash-low";
+const DEFAULT_PRIMARY_MODEL = process.env.PIXIE_ANSWER_BASE_URL ? "kr/claude-sonnet-4.5" : DEFAULT_MODEL;
+const DEFAULT_FALLBACK_MODEL = process.env.PIXIE_ANSWER_BASE_URL ? "ag/gemini-3.6-flash-low" : DEFAULT_MODEL;
 
 // Answers stay on Nine Router unless explicitly opened up
 const allowOffRouter = process.env.PIXIE_ANSWER_ALLOW_FALLBACK === "1";
 
 const nineRouterSecondaryFallbackTier = {
-  apiKey: () => process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY,
+  apiKey: () =>
+    process.env.PIXIE_ANSWER_BASE_URL
+      ? process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY
+      : nextZenApiKey(),
   baseUrl: normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL),
   model: process.env.PIXIE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL,
   fallback: allowOffRouter
@@ -265,7 +269,10 @@ const nineRouterSecondaryFallbackTier = {
 };
 
 const nineRouterAnswerTier = {
-  apiKey: () => process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY,
+  apiKey: () =>
+    process.env.PIXIE_ANSWER_BASE_URL
+      ? process.env.PIXIE_ANSWER_API_KEY || process.env.INTENT_CLASSIFIER_API_KEY || process.env.VISION_API_KEY
+      : nextZenApiKey(),
   baseUrl: normalizeBaseUrl(process.env.PIXIE_ANSWER_BASE_URL, NINE_ROUTER_BASE_URL),
   model: process.env.PIXIE_MODEL || DEFAULT_PRIMARY_MODEL,
   fallback:

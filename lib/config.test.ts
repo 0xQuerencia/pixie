@@ -184,12 +184,14 @@ test("nextZenApiKey round-robins across every configured key", () => {
   }
 });
 
-test("config.answer.apiKey does not draw from the Zen key pool", () => {
+test("default answer provider uses Zen credentials, custom router does not", () => {
   const saved = config.zenApiKeys;
   config.zenApiKeys = ["key-a", "key-b"];
   try {
     const getApiKey = (fnOrStr: TestAny) => (typeof fnOrStr === "function" ? fnOrStr() : fnOrStr);
-    assert.ok(!["key-a", "key-b"].includes(getApiKey(config.answer.apiKey)));
+    const key = getApiKey(config.answer.apiKey);
+    if (process.env.PIXIE_ANSWER_BASE_URL) assert.ok(!["key-a", "key-b"].includes(key));
+    else assert.ok(["key-a", "key-b"].includes(key));
   } finally {
     config.zenApiKeys = saved;
   }
@@ -347,3 +349,8 @@ test("refreshIntervalMin is a positive number", () => {
   assert.ok(Number.isFinite(config.refreshIntervalMin) && config.refreshIntervalMin > 0);
 });
 export {};
+
+test("answer and ping provider defaults never require the old private Railway hostname", () => {
+  assert.doesNotMatch(config.answer.baseUrl, /pixie\\.railway\\.internal/i);
+  assert.doesNotMatch(config.pingAnswer.baseUrl, /pixie\\.railway\\.internal/i);
+});
