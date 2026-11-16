@@ -39,12 +39,18 @@ test("buildSlackPermalink uses only trusted configured workspace domains", () =>
     delete process.env.PIXIE_SLACK_WORKSPACE_URL;
     assert.equal(relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"), null);
     process.env.PIXIE_SLACK_WORKSPACE_URL = "https://example.slack.com";
-    assert.equal(relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"),
-      "https://example.slack.com/archives/C0MAIN00001/p1788107539615819");
+    assert.equal(
+      relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"),
+      "https://example.slack.com/archives/C0MAIN00001/p1788107539615819",
+    );
     process.env.PIXIE_SLACK_WORKSPACE_URL = "https://hackclub.slack.com";
     assert.match(relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"), /hackclub\.slack\.com/);
-    for (const unsafe of ["http://example.slack.com", "https://example.slack.com.evil.test",
-      "https://user@example.slack.com", "https://example.slack.com:8443"]) {
+    for (const unsafe of [
+      "http://example.slack.com",
+      "https://example.slack.com.evil.test",
+      "https://user@example.slack.com",
+      "https://example.slack.com:8443",
+    ]) {
       process.env.PIXIE_SLACK_WORKSPACE_URL = unsafe;
       assert.equal(relatedThreads.buildSlackPermalink("C0MAIN00001", "1788107539.615819"), null);
     }
@@ -58,37 +64,37 @@ test("findRelatedThread finds past thread and ignores current active thread", as
   const old = process.env.PIXIE_SLACK_WORKSPACE_URL;
   process.env.PIXIE_SLACK_WORKSPACE_URL = "https://example.slack.com";
   try {
-  db.open(":memory:");
-  db.recordAnsweredThread({
-    question: "how to fix a web export error",
-    channel: "C0HELP00001",
-    threadTs: "1788100100.111111",
-  });
-
-  const simple = await relatedThreads.findRelatedThread("where is the dashboard", {
-    currentThreadTs: "1788200000.222222",
-    channel: "C0HELP00001",
-  });
-  assert.equal(simple, null);
-
-  const selfMatch = await relatedThreads.findRelatedThread("web export error", {
-    currentThreadTs: "1788100100.111111",
-    channel: "C0MAIN00001",
-  });
-  assert.equal(selfMatch, null);
-
-  const match = await relatedThreads.findRelatedThread("how do i fix the web export error on chrome", {
-    currentThreadTs: "1788200000.222222",
-    channel: "C0MAIN00001",
-  });
-  assert.notEqual(match, null);
-  assert.equal(match.channel, "C0HELP00001");
-  assert.equal(match.threadTs, "1788100100.111111");
-  assert.ok(match.permalink.includes("p1788100100111111"));
-
-  const line = relatedThreads.formatRelatedThreadLine(match);
-  assert.ok(line.includes("Related discussion:"));
-  assert.ok(line.includes("view previous thread"));
+    db.open(":memory:");
+    db.recordAnsweredThread({
+      question: "how to fix a web export error",
+      channel: "C0HELP00001",
+      threadTs: "1788100100.111111",
+    });
+  
+    const simple = await relatedThreads.findRelatedThread("where is the dashboard", {
+      currentThreadTs: "1788200000.222222",
+      channel: "C0HELP00001",
+    });
+    assert.equal(simple, null);
+  
+    const selfMatch = await relatedThreads.findRelatedThread("web export error", {
+      currentThreadTs: "1788100100.111111",
+      channel: "C0MAIN00001",
+    });
+    assert.equal(selfMatch, null);
+  
+    const match = await relatedThreads.findRelatedThread("how do i fix the web export error on chrome", {
+      currentThreadTs: "1788200000.222222",
+      channel: "C0MAIN00001",
+    });
+    assert.notEqual(match, null);
+    assert.equal(match.channel, "C0HELP00001");
+    assert.equal(match.threadTs, "1788100100.111111");
+    assert.ok(match.permalink.includes("p1788100100111111"));
+  
+    const line = relatedThreads.formatRelatedThreadLine(match);
+    assert.ok(line.includes("Related discussion:"));
+    assert.ok(line.includes("view previous thread"));
   } finally {
     if (old === undefined) delete process.env.PIXIE_SLACK_WORKSPACE_URL;
     else process.env.PIXIE_SLACK_WORKSPACE_URL = old;
