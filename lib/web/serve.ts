@@ -377,20 +377,18 @@ async function handleAuth(req: Request): Promise<Response | null> {
   const url = new URL(req.url);
 
   if (url.pathname === "/login") {
-    if (process.env.SLACK_CLIENT_ID === "dev-testing") {
-      const cookieValue = auth.signSession("dev-user", "Developer", "admin");
-      const setCookie = `${auth.COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`;
-      return new Response(null, { status: 302, headers: { "Set-Cookie": setCookie, Location: "/" } });
-    }
-
     if (req.method === "POST") {
       try {
         const formData = await req.formData();
         const passcode = formData.get("passcode") as string | null;
-        const expected = process.env.PIXIE_DASHBOARD_PASSCODE || "pixie";
-        if (passcode && passcode.trim() === expected.trim()) {
+        const expected = process.env.PIXIE_DASHBOARD_PASSCODE?.trim();
+        const validPasscode = Boolean(expected && expected.length >= 16);
+        const supplied = typeof passcode === "string" ? passcode.trim() : "";
+        const matches = validPasscode && supplied.length === expected!.length &&
+          require("crypto").timingSafeEqual(Buffer.from(supplied), Buffer.from(expected!));
+        if (matches) {
           const cookieValue = auth.signSession("admin", "Admin", "admin");
-          const setCookie = `${auth.COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`;
+          const setCookie = `${auth.COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${process.env.PIXIE_WEB_URL?.startsWith("https://") ? "; Secure" : ""}`;
           return new Response(null, { status: 302, headers: { "Set-Cookie": setCookie, Location: "/" } });
         }
         const slackUrl = auth.loginUrl("/");
@@ -1192,7 +1190,7 @@ async function handleRequest(req: Request): Promise<Response> {
 function start() {
   const clientId = process.env.SLACK_CLIENT_ID;
   if (!clientId) {
-    log.info("web", "SLACK_CLIENT_ID not set — passcode auth & screenshot serving enabled");
+    log.info("web", "SLACK_CLIENT_ID not set — passcode login requires PIXIE_DASHBOARD_PASSCODE (16+ characters)");
   }
 
   const port = Number(process.env.PORT) || Number(process.env.PIXIE_WEB_PORT) || 4100;
@@ -1202,11 +1200,11 @@ function start() {
 
   const server = Bun.serve({
     port,
-    hostname: "0.0.0.0",
+    hostname: process.env.PIXIE_WEB_HOST || "127.0.0.1",
     fetch: handleRequest,
   });
 
-  log.info("web", `console running on http://0.0.0.0:${port}`);
+  log.info("web", `console running on http://${process.env.PIXIE_WEB_HOST || "127.0.0.1"}:${port}`);
   return server;
 }
 
