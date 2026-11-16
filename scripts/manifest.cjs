@@ -69,7 +69,7 @@ function manifest() {
     display_information: {
       name,
       description: "Answers questions from your docs, right in Slack.",
-      background_color: "#ec3750",
+      background_color: process.env.PIXIE_BRAND_COLOR || "#23352b",
     },
     features: {
       bot_user: { display_name: name, always_online: true },
@@ -81,7 +81,7 @@ function manifest() {
       })),
       shortcuts: [
         {
-          name: `Teach ${name} from thread`,
+          name: `Teach ${name}`.slice(0, 24),
           type: "message",
           callback_id: brand.id("teach_thread"),
           description: "Capture this thread as a taught answer for review",
