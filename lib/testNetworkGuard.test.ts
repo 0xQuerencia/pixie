@@ -8,3 +8,4 @@ test("unit test preload rejects external provider fetch with actionable error", 
     /Unit test attempted external fetch/,
   );
 });
+export {};
