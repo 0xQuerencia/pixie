@@ -223,10 +223,20 @@ function archiveHost(): string | null {
   if (!configured) return null;
   try {
     const parsed = new URL(configured);
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password ||
-        parsed.port || parsed.search || parsed.hash || !/^[a-z0-9-]+\.slack\.com$/.test(parsed.hostname)) return null;
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      parsed.search ||
+      parsed.hash ||
+      !/^[a-z0-9-]+\.slack\.com$/.test(parsed.hostname)
+    )
+      return null;
     return `${parsed.origin}/archives`;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function isSimpleLookupQuestion(question: string, answerResult: { direct?: boolean } | null = null) {
