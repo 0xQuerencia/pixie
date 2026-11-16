@@ -61,13 +61,13 @@ test("findRelatedThread finds past thread and ignores current active thread", as
   db.open(":memory:");
   db.recordAnsweredThread({
     question: "how to fix a web export error",
-    channel: "C_HELP",
+    channel: "C0HELP00001",
     threadTs: "1788100100.111111",
   });
 
   const simple = await relatedThreads.findRelatedThread("where is the dashboard", {
     currentThreadTs: "1788200000.222222",
-    channel: "C_HELP",
+    channel: "C0HELP00001",
   });
   assert.equal(simple, null);
 
@@ -82,7 +82,7 @@ test("findRelatedThread finds past thread and ignores current active thread", as
     channel: "C0MAIN00001",
   });
   assert.notEqual(match, null);
-  assert.equal(match.channel, "C_HELP");
+  assert.equal(match.channel, "C0HELP00001");
   assert.equal(match.threadTs, "1788100100.111111");
   assert.ok(match.permalink.includes("p1788100100111111"));
 
