@@ -86,6 +86,9 @@ test("hosted loop end to end for Highway and Acme", async () => {
     },
     reactions: { add: async () => ({}) },
   };
+  const firstIntent = require("./intent");
+  const originalFirstClassify = firstIntent.classifyIntent;
+  firstIntent.classifyIntent = async () => firstIntent.HELP_NEEDED;
   try {
     await respond.respond({
       client,
@@ -98,6 +101,7 @@ test("hosted loop end to end for Highway and Acme", async () => {
     });
   } finally {
     lookup.answerOrChat = realAnswer;
+    firstIntent.classifyIntent = originalFirstClassify;
   }
   assert.ok(posts.length >= 1);
   assert.ok(
