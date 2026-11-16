@@ -528,7 +528,6 @@ test("legacy ticket detail requires a program scope even with the shared bearer"
 });
 export {};
 
-
 test("legacy console has no default passcode or dev-testing login bypass", async () => {
   const serve = require("./serve");
   const savedPasscode = process.env.PIXIE_DASHBOARD_PASSCODE;
@@ -539,10 +538,13 @@ test("legacy console has no default passcode or dev-testing login bypass", async
     const get = await serve.handleRequest(new Request("http://localhost/login"));
     assert.equal(get.status, 200);
     assert.equal(get.headers.get("set-cookie"), null);
-    const post = (passcode: string) => serve.handleRequest(new Request("http://localhost/login", {
-      method: "POST",
-      body: new URLSearchParams({ passcode }),
-    }));
+    const post = (passcode: string) =>
+      serve.handleRequest(
+        new Request("http://localhost/login", {
+          method: "POST",
+          body: new URLSearchParams({ passcode }),
+        }),
+      );
     const guessed = await post("pixie");
     assert.equal(guessed.status, 200);
     assert.equal(guessed.headers.get("set-cookie"), null);
