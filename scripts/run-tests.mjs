@@ -45,7 +45,11 @@ function hermeticEnv() {
       key.startsWith("SLACK_") ||
       key.startsWith("JEV_") ||
       key.startsWith("EXPERIENTIAL_") ||
-      key === "DATABASE_URL"
+      key === "DATABASE_URL" ||
+      key === "PIXIE_TEST_ALLOW_NETWORK" ||
+      key === "PIXIE_ANSWER_BASE_URL" ||
+      key === "PIXIE_PING_BASE_URL" ||
+      key === "PIXIE_ANSWER_PROVIDER"
     ) {
       delete env[key];
     }
