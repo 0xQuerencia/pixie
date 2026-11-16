@@ -70,19 +70,19 @@ test("findRelatedThread finds past thread and ignores current active thread", as
       channel: "C0HELP00001",
       threadTs: "1788100100.111111",
     });
-  
+
     const simple = await relatedThreads.findRelatedThread("where is the dashboard", {
       currentThreadTs: "1788200000.222222",
       channel: "C0HELP00001",
     });
     assert.equal(simple, null);
-  
+
     const selfMatch = await relatedThreads.findRelatedThread("web export error", {
       currentThreadTs: "1788100100.111111",
       channel: "C0MAIN00001",
     });
     assert.equal(selfMatch, null);
-  
+
     const match = await relatedThreads.findRelatedThread("how do i fix the web export error on chrome", {
       currentThreadTs: "1788200000.222222",
       channel: "C0MAIN00001",
@@ -91,7 +91,7 @@ test("findRelatedThread finds past thread and ignores current active thread", as
     assert.equal(match.channel, "C0HELP00001");
     assert.equal(match.threadTs, "1788100100.111111");
     assert.ok(match.permalink.includes("p1788100100111111"));
-  
+
     const line = relatedThreads.formatRelatedThreadLine(match);
     assert.ok(line.includes("Related discussion:"));
     assert.ok(line.includes("view previous thread"));
